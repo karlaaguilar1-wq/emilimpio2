@@ -386,6 +386,15 @@ function db(key, updater) {
 
 function sucursalActual() { return DB.sucursales.find((s) => s.id === UI.sucursalActualId); }
 
+/** True si el usuario está escribiendo en un campo (input/texto/select) en este momento.
+ *  Se usa para NO volver a dibujar toda la pantalla mientras alguien está llenando un
+ *  formulario (por ejemplo "Nuevo producto"), porque eso borraría lo que ya escribió.
+ *  El dato sí se guarda igual en segundo plano; solo se pospone el refresco visual. */
+function hayEntradaActivaDelUsuario() {
+  const el = document.activeElement;
+  return !!(el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName));
+}
+
 /* ---------------------------------------------------------------------
  * SUPABASE — base de datos compartida entre sucursales (OPCIONAL).
  * Mientras SUPABASE_URL / SUPABASE_ANON_KEY estén vacíos, el sistema
@@ -544,7 +553,7 @@ async function procesarColaPendiente() {
     if (!cola.length) UI.syncEstado = 'ok';
   } finally {
     procesandoColaPendiente = false;
-    if (UI.session) render();
+    if (UI.session && !hayEntradaActivaDelUsuario()) render();
   }
 }
 
@@ -636,7 +645,10 @@ function aplicarCambioRemoto(key, conv, payload) {
   }
   save(key, DB[key]);
   ultimoSyncSnapshot[key] = JSON.parse(JSON.stringify(DB[key]));
-  if (UI.session) render();
+  // Si el usuario está escribiendo en un formulario ahora mismo, no lo interrumpimos:
+  // el dato ya quedó guardado arriba y se verá en pantalla en el siguiente refresco
+  // (por ejemplo al cerrar el formulario o navegar a otra pantalla).
+  if (UI.session && !hayEntradaActivaDelUsuario()) render();
 }
 
 if (SUPABASE_ACTIVO) {
@@ -1722,16 +1734,15 @@ function h_catalogoFiltroFamilia(v) {
   if (cont) cont.innerHTML = renderCatalogoTable(filtrarCatalogo(), efectivoRol() === 'OWNER');
 }
 function renderCatalogoTable(list, owner) {
-  const cols = owner ? 8 : 7;
+  const cols = owner ? 7 : 6;
   return `
     <div class="table-wrap"><table class="dtable">
-      <thead><tr><th>Foto</th><th>Producto</th><th>Tipo</th><th>Familia</th><th>Menudeo</th><th>Mayoreo</th>${owner ? '<th>Costo</th>' : ''}<th style="text-align:right;">Acciones</th></tr></thead>
+      <thead><tr><th>Foto</th><th>Producto</th><th>Familia</th><th>Menudeo</th><th>Mayoreo</th>${owner ? '<th>Costo</th>' : ''}<th style="text-align:right;">Acciones</th></tr></thead>
       <tbody>
         ${list.map((p) => `
           <tr>
             <td><div style="width:38px;height:38px;border-radius:9px;border:1px solid var(--line-soft);background:var(--ground);display:flex;align-items:center;justify-content:center;overflow:hidden;">${p.foto ? `<img src="${p.foto}" style="width:100%;height:100%;object-fit:cover;">` : `<span>${TIPO_ICON[p.tipo]}</span>`}</div></td>
             <td style="font-weight:700;color:var(--navy);">${escapeHtml(p.nombre)}</td>
-            <td><span class="badge badge-gray">${TIPO_LABEL[p.tipo]}</span></td>
             <td><span class="badge badge-emerald">${escapeHtml(familiaDe(p))}</span></td>
             <td>${formatoMoneda(p.precioMenudeo)}</td>
             <td>${formatoMoneda(p.precioMayoreo)}</td>
@@ -1760,7 +1771,6 @@ function renderProductoFormModal() {
   const editando = UI.productos.editando;
   const owner = efectivoRol() === 'OWNER';
   const foto = UI.productos.fotoTmp !== undefined && UI.productos.fotoTmp !== null ? UI.productos.fotoTmp : (editando ? editando.foto : null);
-  const tipos = [['detergente', 'Detergente'], ['suavizante', 'Suavizante'], ['cloro', 'Cloro'], ['otros', 'Otros']];
   return modalWrap(`
     <div class="modal-pad">
       <h3>${editando ? 'Editar producto' : 'Nuevo producto'}</h3>
@@ -1774,11 +1784,6 @@ function renderProductoFormModal() {
         </label>
       </div>
       <label class="field" style="margin-top:12px;"><span class="field-label">Nombre</span><input id="pf-nombre" class="input" style="margin-top:4px;" value="${escapeHtml(editando ? editando.nombre : '')}"></label>
-      <label class="field"><span class="field-label">Tipo</span>
-        <select id="pf-tipo" class="input" style="margin-top:4px;">
-          ${tipos.map(([v, l]) => `<option value="${v}" ${editando && editando.tipo === v ? 'selected' : ''}>${l}</option>`).join('')}
-        </select>
-      </label>
       <label class="field"><span class="field-label">Familia <span style="font-weight:400;color:var(--muted);">(solo interno, no se ve en el POS)</span></span>
         <div style="display:flex;gap:8px;">
           <select id="pf-familia" class="input" style="margin-top:4px;flex:1;">
@@ -1916,7 +1921,7 @@ function h_guardarProducto() {
     id: editando ? editando.id : genId('prod'),
     nombre,
     foto: UI.productos.fotoTmp !== undefined && UI.productos.fotoTmp !== null ? UI.productos.fotoTmp : (editando ? editando.foto : null),
-    tipo: document.getElementById('pf-tipo').value,
+    tipo: editando ? editando.tipo : 'otros',
     familia: (document.getElementById('pf-familia').value || 'Otros').trim(),
     precioMenudeo: Number(document.getElementById('pf-menudeo').value) || 0,
     precioMayoreo: Number(document.getElementById('pf-mayoreo').value) || 0,
