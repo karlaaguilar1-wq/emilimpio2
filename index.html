@@ -365,7 +365,7 @@ const UI = {
   syncEstado: 'inactivo', // 'inactivo' | 'sincronizando' | 'ok' | 'sin_conexion' (solo aplica si SUPABASE_ACTIVO)
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null },
-  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null } },
+  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', formOpen: false, editando: null },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
@@ -2023,6 +2023,9 @@ function h_abrirAgregarMaterial() {
   UI.productos.inv.showAgregar = true;
   UI.productos.inv.carrito = [];
   UI.productos.inv.ultimoProductoId = null;
+  UI.productos.inv.busquedaProducto = '';
+  UI.productos.inv.productoSeleccionado = null;
+  UI.productos.inv.dropdownVisible = false;
   refreshModalRoot();
 }
 function h_cerrarAgregarMaterial() {
@@ -2034,17 +2037,20 @@ function h_cerrarAgregarMaterial() {
 function renderAgregarMaterialModal() {
   const suc = DB.sucursales.find((s) => s.id === UI.productos.inv.sucursalId);
   const carrito = UI.productos.inv.carrito;
-  const seleccionado = UI.productos.inv.ultimoProductoId || (DB.productos[0] || {}).id || '';
   return modalWrap(`
     <div class="modal-pad">
       <h3>Agregar material</h3>
       <p style="color:var(--muted);font-size:12px;margin-top:2px;">Sucursal: ${escapeHtml(suc ? suc.nombre : '')}</p>
 
       <div style="display:flex;gap:8px;align-items:flex-end;margin-top:16px;">
-        <label class="field" style="flex:1;margin:0;"><span class="field-label">Producto</span>
-          <select id="am-producto" class="input" style="margin-top:4px;">
-            ${DB.productos.map((p) => `<option value="${p.id}" ${p.id === seleccionado ? 'selected' : ''}>${escapeHtml(p.nombre)}</option>`).join('')}
-          </select>
+        <label class="field" style="flex:1;margin:0;position:relative;"><span class="field-label">Producto</span>
+          <input id="am-busqueda" class="input" style="margin-top:4px;" autocomplete="off" placeholder="Escribe para buscar… (ej. cloro)"
+            value="${escapeHtml(UI.productos.inv.busquedaProducto)}"
+            oninput="h_amBusqueda(this.value)"
+            onfocus="h_amBusquedaFocus()"
+            onblur="h_amBusquedaBlur()"
+            onkeydown="h_amBusquedaKey(event)">
+          <div id="am-dropdown">${renderAmDropdown()}</div>
         </label>
         <label class="field" style="width:110px;margin:0;"><span class="field-label">Cantidad</span>
           <input id="am-cantidad" type="number" min="0" step="0.5" class="input" style="margin-top:4px;" value="" placeholder="0">
@@ -2065,6 +2071,73 @@ function renderAgregarMaterialModal() {
   `, '460px');
 }
 
+function renderAmDropdown() {
+  if (!UI.productos.inv.dropdownVisible) return '';
+  const q = UI.productos.inv.busquedaProducto.trim();
+  if (!q) return '';
+  const suc = DB.sucursales.find((s) => s.id === UI.productos.inv.sucursalId);
+  const list = productosCoincidentes(q).slice(0, 8);
+  if (!list.length) {
+    // Sin resultados: no mostramos nada, para no tapar el botón "+ Añadir a la lista" de abajo.
+    return '';
+  }
+  return `<div class="search-dropdown">
+    ${list.map((p) => {
+      const stock = suc ? getStock(suc.id, p.id) : 0;
+      return `<div class="search-dropdown-item" onmousedown="event.preventDefault(); h_amSeleccionarProducto('${p.id}')">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+          ${p.foto ? `<img src="${p.foto}" style="width:28px;height:28px;border-radius:8px;object-fit:cover;flex-shrink:0;" alt="">` : `<span style="font-size:17px;flex-shrink:0;">${TIPO_ICON[p.tipo]}</span>`}
+          <div style="min-width:0;">
+            <p style="font-weight:700;color:var(--navy);font-size:13px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.nombre)}</p>
+            <p style="font-size:11px;color:var(--muted);margin:0;">${escapeHtml(familiaDe(p))}</p>
+          </div>
+        </div>
+        <span class="badge badge-gray" style="flex-shrink:0;">${stock} ${p.piezas ? 'pzas' : 'L'}</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function h_amBusqueda(v) {
+  UI.productos.inv.busquedaProducto = v;
+  UI.productos.inv.productoSeleccionado = null;
+  UI.productos.inv.dropdownVisible = true;
+  const dd = document.getElementById('am-dropdown');
+  if (dd) dd.innerHTML = renderAmDropdown();
+}
+function h_amBusquedaFocus() {
+  UI.productos.inv.dropdownVisible = true;
+  const dd = document.getElementById('am-dropdown');
+  if (dd) dd.innerHTML = renderAmDropdown();
+}
+function h_amBusquedaBlur() {
+  setTimeout(() => {
+    UI.productos.inv.dropdownVisible = false;
+    const dd = document.getElementById('am-dropdown');
+    if (dd) dd.innerHTML = renderAmDropdown();
+  }, 180);
+}
+function h_amBusquedaKey(e) {
+  if (e.key === 'Escape') { e.target.blur(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const match = productosCoincidentes(UI.productos.inv.busquedaProducto)[0];
+  if (match) h_amSeleccionarProducto(match.id);
+}
+function h_amSeleccionarProducto(id) {
+  const p = DB.productos.find((x) => x.id === id);
+  if (!p) return;
+  UI.productos.inv.productoSeleccionado = id;
+  UI.productos.inv.busquedaProducto = p.nombre;
+  UI.productos.inv.dropdownVisible = false;
+  const input = document.getElementById('am-busqueda');
+  if (input) input.value = p.nombre;
+  const dd = document.getElementById('am-dropdown');
+  if (dd) dd.innerHTML = '';
+  const cantidad = document.getElementById('am-cantidad');
+  if (cantidad) { cantidad.focus(); cantidad.select(); }
+}
+
 function renderAgregarMaterialLista() {
   const carrito = UI.productos.inv.carrito;
   if (!carrito.length) {
@@ -2083,9 +2156,14 @@ function renderAgregarMaterialLista() {
 }
 
 function h_agregarMaterialALista() {
-  const productoId = document.getElementById('am-producto').value;
+  const productoId = UI.productos.inv.productoSeleccionado;
   const cantidad = Number(document.getElementById('am-cantidad').value);
-  if (!productoId || !cantidad || cantidad <= 0) return;
+  if (!productoId) {
+    const input = document.getElementById('am-busqueda');
+    if (input) { input.focus(); input.style.borderColor = 'var(--red)'; setTimeout(() => { input.style.borderColor = ''; }, 900); }
+    return;
+  }
+  if (!cantidad || cantidad <= 0) return;
   const carrito = UI.productos.inv.carrito;
   const existe = carrito.find((i) => i.productoId === productoId);
   if (existe) {
@@ -2094,7 +2172,12 @@ function h_agregarMaterialALista() {
     carrito.push({ productoId, cantidad: Number(cantidad.toFixed(2)) });
   }
   UI.productos.inv.ultimoProductoId = productoId;
+  // Limpia la búsqueda para poder añadir el siguiente producto rápido
+  UI.productos.inv.busquedaProducto = '';
+  UI.productos.inv.productoSeleccionado = null;
   refreshModalRoot();
+  const input = document.getElementById('am-busqueda');
+  if (input) input.focus();
 }
 
 function h_quitarMaterialLista(productoId) {
