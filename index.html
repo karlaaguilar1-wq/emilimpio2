@@ -365,7 +365,7 @@ const UI = {
   syncEstado: 'inactivo', // 'inactivo' | 'sincronizando' | 'ok' | 'sin_conexion' (solo aplica si SUPABASE_ACTIVO)
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null },
-  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null } },
+  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', formOpen: false, editando: null },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
@@ -1518,6 +1518,7 @@ function renderModalRoot() {
   if (UI.venta.showPago) return renderPagoModal();
   if (UI.venta.showCorte) return renderCorteModal();
   if (UI.productos.formOpen) return renderProductoFormModal();
+  if (UI.productos.familiasModalOpen) return renderFamiliasModal();
   if (UI.productos.inv.showAgregar) return renderAgregarMaterialModal();
   if (UI.clientes.formOpen) return renderClienteFormModal();
   if (UI.gastos.formOpen) return renderGastoFormModal();
@@ -1698,6 +1699,7 @@ function renderCatalogoTab() {
             ${DB.familias.map((f) => `<option value="${escapeHtml(f)}" ${UI.productos.filtroFamilia === f ? 'selected' : ''}>${escapeHtml(f)}</option>`).join('')}
           </select>
         </label>
+        ${owner ? `<button class="btn btn-ghost" style="margin-top:20px;" data-action="abrirFamilias">🏷️ Familias</button>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-ghost" data-action="exportarCatalogo">⬇️ Descargar Excel</button>
@@ -1815,6 +1817,74 @@ function h_nuevaFamilia() {
     select.value = nombre;
   }
 }
+
+function h_abrirFamilias() {
+  if (!puedeBorrar()) return;
+  UI.productos.familiasModalOpen = true;
+  UI.productos.nuevaFamiliaTmp = '';
+  refreshModalRoot();
+}
+function h_cerrarFamilias() {
+  UI.productos.familiasModalOpen = false;
+  refreshModalRoot();
+}
+function h_familiaNuevaInput(v) {
+  UI.productos.nuevaFamiliaTmp = v;
+}
+function h_agregarFamiliaDesdeModal() {
+  const nombre = (UI.productos.nuevaFamiliaTmp || '').trim();
+  if (!nombre) return;
+  if (DB.familias.some((f) => f.toLowerCase() === nombre.toLowerCase())) {
+    alert('Esa familia ya existe.');
+    return;
+  }
+  db('familias', (list) => [...list, nombre]);
+  UI.productos.nuevaFamiliaTmp = '';
+  refreshModalRoot();
+}
+function h_borrarFamilia(nombre) {
+  if (!puedeBorrar()) return;
+  if (nombre === 'Otros') { alert('La familia "Otros" no se puede borrar — es la que se usa por defecto.'); return; }
+  const enUso = DB.productos.filter((p) => familiaDe(p) === nombre).length;
+  const mensaje = enUso > 0
+    ? `"${nombre}" tiene ${enUso} producto(s) asignado(s). Si la borras, esos productos pasarán a la familia "Otros". ¿Continuar?`
+    : `¿Borrar la familia "${nombre}"?`;
+  if (!confirm(mensaje)) return;
+  if (enUso > 0) {
+    db('productos', (list) => list.map((p) => (familiaDe(p) === nombre ? { ...p, familia: 'Otros' } : p)));
+  }
+  db('familias', (list) => list.filter((f) => f !== nombre));
+  refreshModalRoot();
+}
+function renderFamiliasModal() {
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>Familias de productos</h3>
+      <p style="font-size:12.5px;color:var(--muted);margin:4px 0 16px;">Categorías internas para organizar tus productos — no se ven en el punto de venta.</p>
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <input class="input" style="flex:1;" placeholder="Nombre de la nueva familia…" value="${escapeHtml(UI.productos.nuevaFamiliaTmp || '')}" oninput="h_familiaNuevaInput(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();h_agregarFamiliaDesdeModal();}">
+        <button class="btn btn-accent" data-action="agregarFamiliaDesdeModal">+ Agregar</button>
+      </div>
+      <div style="max-height:320px;overflow-y:auto;">
+        ${DB.familias.map((f) => {
+          const enUso = DB.productos.filter((p) => familiaDe(p) === f).length;
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 4px;border-bottom:1px solid var(--line-soft);">
+              <div>
+                <span style="font-weight:700;color:var(--navy);">${escapeHtml(f)}</span>
+                <span style="font-size:11.5px;color:var(--muted);margin-left:8px;">${enUso} producto(s)</span>
+              </div>
+              ${f === 'Otros' ? '' : `<button class="btn-danger-text" data-action="borrarFamilia" data-id="${escapeHtml(f)}">Borrar</button>`}
+            </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:18px;">
+        <button class="btn btn-ghost" style="flex:1;" data-action="cerrarFamilias">Cerrar</button>
+      </div>
+    </div>
+  `, '440px');
+}
+
 function h_fotoProducto(file) {
   if (!file) return;
   const reader = new FileReader();
