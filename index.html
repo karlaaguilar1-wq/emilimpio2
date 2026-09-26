@@ -398,7 +398,7 @@ const UI = {
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false },
   productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
-  gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', formOpen: false, editando: null },
+  gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
   tickets: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', busquedaFolio: '', detalleId: null, editando: null },
   reportes: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '' },
@@ -489,11 +489,11 @@ const TABLAS_SUPABASE = {
     tabla: 'gastos',
     aFila: (g) => ({
       id: g.id, fecha: g.fecha, sucursal_id: g.sucursalId, sucursal_nombre: g.sucursalNombre,
-      tipo: g.tipo, concepto: g.concepto, monto: g.monto, nota: g.nota || null,
+      tipo: g.tipo, concepto: g.concepto, monto: g.monto, nota: g.nota || null, es_fijo: !!g.esFijo,
     }),
     deFila: (f) => ({
       id: f.id, fecha: f.fecha, sucursalId: f.sucursal_id, sucursalNombre: f.sucursal_nombre,
-      tipo: f.tipo, concepto: f.concepto, monto: Number(f.monto) || 0, nota: f.nota,
+      tipo: f.tipo, concepto: f.concepto, monto: Number(f.monto) || 0, nota: f.nota, esFijo: !!f.es_fijo,
     }),
   },
   ventas: {
@@ -2687,12 +2687,16 @@ function renderGastos() {
   const metepec = DB.sucursales.find((s) => s.nombre.toLowerCase().includes('metepec'));
   const gastosTolucaMes = mes.filter((g) => toluca && g.sucursalId === toluca.id).reduce((s, g) => s + g.monto, 0);
   const gastosMetepecMes = mes.filter((g) => metepec && g.sucursalId === metepec.id).reduce((s, g) => s + g.monto, 0);
+  const fijosMes = mes.filter((g) => g.esFijo).reduce((s, g) => s + g.monto, 0);
+  const variablesMes = mes.filter((g) => !g.esFijo).reduce((s, g) => s + g.monto, 0);
   return `
     ${topbar('Gastos Sucursales', 'Control de gastos operativos por sucursal', `<button class="btn btn-accent" data-action="nuevoGasto">+ Nuevo gasto</button>`)}
     <div class="view-body">
       <div class="kpi-grid">
         <div class="kpi"><div class="kpi-label">Gastos hoy</div><div class="kpi-value" style="color:var(--red);">${formatoMoneda(hoy.reduce((s, g) => s + g.monto, 0))}</div></div>
         <div class="kpi"><div class="kpi-label">Gastos del mes</div><div class="kpi-value">${formatoMoneda(mes.reduce((s, g) => s + g.monto, 0))}</div></div>
+        <div class="kpi"><div class="kpi-label">📌 Fijos (mes)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(fijosMes)}</div><div class="kpi-sub">renta, luz, agua…</div></div>
+        <div class="kpi"><div class="kpi-label">Variables (mes)</div><div class="kpi-value" style="color:var(--ink-soft);">${formatoMoneda(variablesMes)}</div><div class="kpi-sub">extras del mes</div></div>
         <div class="kpi"><div class="kpi-label">${escapeHtml(toluca ? toluca.nombre : 'Toluca Centro')} (mes)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(gastosTolucaMes)}</div></div>
         <div class="kpi"><div class="kpi-label">${escapeHtml(metepec ? metepec.nombre : 'Metepec')} (mes)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(gastosMetepecMes)}</div></div>
       </div>
@@ -2705,6 +2709,11 @@ function renderGastos() {
           <option value="todos" ${UI.gastos.filtroTipo === 'todos' ? 'selected' : ''}>Todos los tipos</option>
           ${GASTO_TIPOS.map((t) => `<option ${UI.gastos.filtroTipo === t ? 'selected' : ''}>${t}</option>`).join('')}
         </select>
+        <select class="input" style="max-width:220px;" onchange="h_gastoFiltroNaturaleza(this.value)">
+          <option value="todos" ${UI.gastos.filtroNaturaleza === 'todos' ? 'selected' : ''}>Fijos y variables</option>
+          <option value="fijo" ${UI.gastos.filtroNaturaleza === 'fijo' ? 'selected' : ''}>📌 Solo fijos</option>
+          <option value="variable" ${UI.gastos.filtroNaturaleza === 'variable' ? 'selected' : ''}>Solo variables</option>
+        </select>
       </div>
       <div id="gastos-body">${renderGastosBody()}</div>
     </div>
@@ -2715,6 +2724,7 @@ function gastosFiltrados() {
   return DB.gastos
     .filter((g) => UI.gastos.filtroSucursal === 'todas' || g.sucursalId === UI.gastos.filtroSucursal)
     .filter((g) => UI.gastos.filtroTipo === 'todos' || g.tipo === UI.gastos.filtroTipo)
+    .filter((g) => UI.gastos.filtroNaturaleza === 'todos' || (UI.gastos.filtroNaturaleza === 'fijo' ? !!g.esFijo : !g.esFijo))
     .sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
 }
 function renderGastosBody() {
@@ -2729,7 +2739,7 @@ function renderGastosBody() {
           <tr>
             <td>${formatoFecha(g.fecha)}</td>
             <td>${escapeHtml(g.sucursalNombre)}</td>
-            <td><span style="font-weight:700;color:var(--navy);">${escapeHtml(g.concepto)}</span>${g.nota ? `<div style="font-size:11px;color:var(--muted);">${escapeHtml(g.nota)}</div>` : ''}</td>
+            <td><span style="font-weight:700;color:var(--navy);">${escapeHtml(g.concepto)}</span>${g.esFijo ? ` <span class="badge badge-blue">📌 Fijo</span>` : ''}${g.nota ? `<div style="font-size:11px;color:var(--muted);">${escapeHtml(g.nota)}</div>` : ''}</td>
             <td>${g.tipo}</td>
             <td style="font-weight:800;color:var(--red);">${formatoMoneda(g.monto)}</td>
             <td style="text-align:right;white-space:nowrap;">
@@ -2743,6 +2753,7 @@ function renderGastosBody() {
 }
 function h_gastoFiltroSucursal(v) { UI.gastos.filtroSucursal = v; render(); }
 function h_gastoFiltroTipo(v) { UI.gastos.filtroTipo = v; render(); }
+function h_gastoFiltroNaturaleza(v) { UI.gastos.filtroNaturaleza = v; render(); }
 function h_nuevoGasto() { UI.gastos.editando = null; UI.gastos.formOpen = true; refreshModalRoot(); }
 function h_editarGasto(id) { UI.gastos.editando = DB.gastos.find((g) => g.id === id); UI.gastos.formOpen = true; refreshModalRoot(); }
 function h_borrarGasto(id) {
@@ -2771,6 +2782,10 @@ function renderGastoFormModal() {
       <label class="field"><span class="field-label">Concepto</span><input id="gf-concepto" class="input" style="margin-top:4px;" placeholder="Ej. Renta local mayo" value="${escapeHtml(e ? e.concepto : '')}"></label>
       <label class="field"><span class="field-label">Monto (MXN)</span><input id="gf-monto" type="number" class="input" style="margin-top:4px;" value="${e ? e.monto : 0}"></label>
       <label class="field"><span class="field-label">Nota / proveedor / ticket</span><textarea id="gf-nota" class="input" style="margin-top:4px;" rows="2">${escapeHtml(e ? e.nota : '')}</textarea></label>
+      <label style="display:flex;align-items:center;gap:9px;margin-top:14px;cursor:pointer;">
+        <input id="gf-fijo" type="checkbox" style="width:17px;height:17px;flex-shrink:0;" ${e && e.esFijo ? 'checked' : ''}>
+        <span style="font-size:13px;color:var(--ink);">📌 Es un gasto fijo <span style="font-weight:400;color:var(--muted);">(se repite cada mes, como renta, luz o agua — no lo captura solo, nada más lo marca para separarlo de los gastos variables)</span></span>
+      </label>
       <div style="display:flex;gap:10px;margin-top:18px;">
         <button class="btn btn-ghost" style="flex:1;" data-action="cerrarGastoForm">Cancelar</button>
         <button class="btn btn-primary" style="flex:1;" data-action="guardarGasto">Guardar</button>
@@ -2789,6 +2804,7 @@ function h_guardarGasto() {
     id: e ? e.id : genId('gasto'), fecha: document.getElementById('gf-fecha').value,
     sucursalId, sucursalNombre: suc ? suc.nombre : '', tipo: document.getElementById('gf-tipo').value,
     concepto, monto, nota: document.getElementById('gf-nota').value.trim(),
+    esFijo: !!(document.getElementById('gf-fijo') && document.getElementById('gf-fijo').checked),
   };
   db('gastos', (list) => {
     const existe = list.some((g) => g.id === gasto.id);
