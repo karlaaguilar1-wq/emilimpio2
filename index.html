@@ -363,6 +363,7 @@ const UI = {
   clientePendiente: null,
   loginError: '',
   syncEstado: 'inactivo', // 'inactivo' | 'sincronizando' | 'ok' | 'sin_conexion' (solo aplica si SUPABASE_ACTIVO)
+  syncErroresOpen: false,
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null },
   productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false } },
@@ -526,8 +527,16 @@ function sincronizarConSupabase(key) {
 
 /* --- Cola de reintento: si no hay internet, las escrituras se guardan y se reintentan solas --- */
 const COLA_PENDIENTE_KEY = 'sync_pendientes';
+const SYNC_ERRORES_KEY = 'sync_errores';
 function colaPendiente() { return load(COLA_PENDIENTE_KEY, []); }
 function guardarColaPendiente(cola) { save(COLA_PENDIENTE_KEY, cola); }
+function erroresSync() { return load(SYNC_ERRORES_KEY, []); }
+/** Guarda un error real del servidor (no de conexión) para poder verlo desde la app, sin necesitar la consola del navegador. */
+function registrarErrorSync(op, mensaje) {
+  const errores = erroresSync();
+  errores.push({ tabla: op.tabla || op.fn || '?', tipo: op.tipo, mensaje: mensaje || 'Error desconocido', fecha: new Date().toISOString() });
+  save(SYNC_ERRORES_KEY, errores.slice(-30)); // conserva solo los últimos 30
+}
 
 function encolarEscritura(op) {
   if (!SUPABASE_ACTIVO) return;
@@ -543,14 +552,39 @@ async function procesarColaPendiente() {
   procesandoColaPendiente = true;
   UI.syncEstado = 'sincronizando';
   try {
-    let cola = colaPendiente();
-    while (cola.length) {
-      const ok = await ejecutarOperacionSupabase(cola[0]);
-      if (!ok) { UI.syncEstado = 'sin_conexion'; break; }
-      cola = cola.slice(1);
-      guardarColaPendiente(cola);
+    let huboFallo = false;
+    while (true) {
+      // Siempre se relee la cola desde el almacenamiento justo antes de tomar el primer elemento:
+      // mientras esperamos la respuesta de un envío, se pueden haber agregado más (por ejemplo,
+      // al subir un Excel con muchos productos de golpe), y no queremos perder esos nuevos.
+      const colaActual = colaPendiente();
+      if (!colaActual.length) break;
+      const op = colaActual[0];
+      const resultado = await ejecutarOperacionSupabase(op);
+      if (resultado.ok) {
+        const colaTrasEsperar = colaPendiente();
+        guardarColaPendiente(colaTrasEsperar.slice(1));
+        continue;
+      }
+      huboFallo = true;
+      if (resultado.origen === 'red') {
+        // Sin internet (o Supabase no responde): no se toca la cola, se reintenta más tarde solo.
+        break;
+      }
+      // El servidor sí respondió pero rechazó la operación (por ejemplo un dato mal formado o un
+      // permiso faltante). Se reintenta unas veces por si es pasajero; si insiste, se saca de la
+      // cola para no bloquear todo lo que viene detrás, y se guarda el error para poder revisarlo.
+      const intentos = (op.intentos || 0) + 1;
+      const colaTrasEsperar = colaPendiente();
+      const restante = colaTrasEsperar.slice(1);
+      if (intentos >= 5) {
+        registrarErrorSync(op, resultado.error);
+      } else {
+        restante.unshift({ ...op, intentos });
+      }
+      guardarColaPendiente(restante);
     }
-    if (!cola.length) UI.syncEstado = 'ok';
+    UI.syncEstado = huboFallo ? 'sin_conexion' : 'ok';
   } finally {
     procesandoColaPendiente = false;
     if (UI.session && !hayEntradaActivaDelUsuario()) render();
@@ -559,21 +593,25 @@ async function procesarColaPendiente() {
 
 async function ejecutarOperacionSupabase(op) {
   try {
+    let resultado;
     if (op.tipo === 'upsert') {
-      const { error } = await sb.from(op.tabla).upsert(op.filas, { onConflict: op.conflictCols.join(',') });
-      if (error) { console.warn('Supabase upsert falló en', op.tabla, error.message); return false; }
+      resultado = await sb.from(op.tabla).upsert(op.filas, { onConflict: op.conflictCols.join(',') });
     } else if (op.tipo === 'borrar') {
       let q = sb.from(op.tabla).delete();
       op.filtros.forEach(([col, val]) => { q = q.eq(col, val); });
-      const { error } = await q;
-      if (error) { console.warn('Supabase borrar falló en', op.tabla, error.message); return false; }
+      resultado = await q;
     } else if (op.tipo === 'rpc') {
-      const { error } = await sb.rpc(op.fn, op.args);
-      if (error) { console.warn('Supabase rpc falló', op.fn, error.message); return false; }
+      resultado = await sb.rpc(op.fn, op.args);
+    } else {
+      return { ok: true };
     }
-    return true;
+    if (resultado.error) {
+      console.warn('Supabase falló en', op.tabla || op.fn, resultado.error.message);
+      return { ok: false, origen: 'servidor', error: resultado.error.message };
+    }
+    return { ok: true };
   } catch (e) {
-    return false; // sin conexión u otro error de red: se reintenta más tarde
+    return { ok: false, origen: 'red', error: (e && e.message) || 'Error de red' }; // sin conexión u otro error de red: se reintenta más tarde
   }
 }
 
@@ -961,7 +999,32 @@ function renderSyncBadge() {
     inactivo: { texto: '🔄 Sincronizando…', color: 'var(--muted)' },
   };
   const e = estilos[UI.syncEstado] || estilos.inactivo;
-  return `<p style="font-size:10.5px;color:${e.color};text-align:center;margin:0 0 8px;">${e.texto}</p>`;
+  const numErrores = (efectivoRol() === 'OWNER') ? erroresSync().length : 0;
+  return `<p style="font-size:10.5px;color:${e.color};text-align:center;margin:0 0 8px;">${e.texto}</p>
+    ${numErrores ? `<p style="text-align:center;margin:-4px 0 8px;"><button style="border:none;background:none;color:var(--red);font-size:10.5px;text-decoration:underline;cursor:pointer;padding:0;" data-action="verErroresSync">⚠️ ${numErrores} producto(s) no se pudieron subir — ver detalle</button></p>` : ''}`;
+}
+function h_verErroresSync() { UI.syncErroresOpen = true; refreshModalRoot(); }
+function h_cerrarErroresSync() { UI.syncErroresOpen = false; refreshModalRoot(); }
+function h_borrarErroresSync() { save(SYNC_ERRORES_KEY, []); refreshModalRoot(); }
+function renderErroresSyncModal() {
+  const errores = erroresSync().slice().reverse();
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>Productos que no se pudieron subir</h3>
+      <p style="font-size:12px;color:var(--muted);margin-top:4px;">Estos cambios se guardaron en este aparato pero la base de datos compartida los rechazó, así que no llegaron a las demás sucursales. Revisa el mensaje de cada uno — muchas veces indica el motivo.</p>
+      <div style="max-height:320px;overflow-y:auto;margin-top:12px;">
+        ${errores.length ? errores.map((e) => `
+          <div style="border-bottom:1px solid var(--line-soft);padding:9px 2px;">
+            <p style="font-weight:700;color:var(--navy);font-size:12.5px;margin:0;">${escapeHtml(e.tabla)} <span style="font-weight:400;color:var(--muted);">· ${new Date(e.fecha).toLocaleString()}</span></p>
+            <p style="font-size:12px;color:var(--red);margin:2px 0 0;">${escapeHtml(e.mensaje)}</p>
+          </div>`).join('') : '<p style="color:var(--muted);font-size:12.5px;text-align:center;padding:14px 0;">Sin errores guardados.</p>'}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:18px;">
+        <button class="btn btn-ghost" style="flex:1;" data-action="borrarErroresSync">Borrar esta lista</button>
+        <button class="btn btn-primary" style="flex:1;" data-action="cerrarErroresSync">Cerrar</button>
+      </div>
+    </div>
+  `, '480px');
 }
 
 function renderShell() {
@@ -1538,6 +1601,7 @@ function renderModalRoot() {
   if (UI.usuarios.formSucursalOpen) return renderSucursalFormModal();
   if (UI.tickets.editando) return renderTicketEditModal();
   if (UI.tickets.detalleId) return renderTicketDetalleModal();
+  if (UI.syncErroresOpen) return renderErroresSyncModal();
   return '';
 }
 
@@ -2202,6 +2266,13 @@ function h_exportarInventario() {
   XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
   XLSX.writeFile(wb, 'inventario_' + suc.nombre.replace(/\s+/g, '_').toLowerCase() + '.xlsx');
 }
+/** Convierte las llaves de una fila del Excel a minúsculas y sin espacios, para que no importe
+ *  si el encabezado dice "Nombre", "NOMBRE" o "nombre " — todas se leen igual. */
+function normalizarFilaExcel(r) {
+  const out = {};
+  Object.keys(r).forEach((k) => { out[String(k).trim().toLowerCase()] = r[k]; });
+  return out;
+}
 function h_importarInventario(file) {
   if (!file) return;
   const sucId = UI.productos.inv.sucursalId;
@@ -2210,16 +2281,29 @@ function h_importarInventario(file) {
     try {
       const wb = XLSX.read(reader.result, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' }).map(normalizarFilaExcel);
       let n = 0;
+      const noEncontrados = [];
+      const sinCantidad = [];
       rows.filter((r) => String(r.nombre || '').trim()).forEach((r) => {
-        const producto = DB.productos.find((p) => p.nombre.toLowerCase() === String(r.nombre).trim().toLowerCase());
-        if (producto) { fijarStock(sucId, producto.id, Number(r.stock) || 0); n++; }
+        const nombreFila = String(r.nombre).trim();
+        const producto = DB.productos.find((p) => p.nombre.toLowerCase() === nombreFila.toLowerCase());
+        if (!producto) { noEncontrados.push(nombreFila); return; }
+        const valorTexto = String(r.stock == null ? '' : r.stock).trim().replace(',', '.');
+        const valor = Number(valorTexto);
+        // Si la celda de cantidad viene vacía o con algo que no es un número, NO tocamos el stock
+        // de ese producto (mejor dejarlo como estaba que ponerlo en 0 por error).
+        if (valorTexto === '' || isNaN(valor)) { sinCantidad.push(nombreFila); return; }
+        fijarStock(sucId, producto.id, valor);
+        n++;
       });
-      UI.productos.inv.mensaje = 'Se actualizó el stock de ' + n + ' productos.';
+      let msg = 'Se actualizó el stock de ' + n + ' de ' + rows.length + ' productos del archivo.';
+      if (noEncontrados.length) msg += ' No se encontraron ' + noEncontrados.length + ' (revisa que el nombre sea idéntico al del catálogo): ' + noEncontrados.slice(0, 5).join(', ') + (noEncontrados.length > 5 ? '…' : '') + '.';
+      if (sinCantidad.length) msg += ' ' + sinCantidad.length + ' no tenían una cantidad válida y se dejaron sin cambios.';
+      UI.productos.inv.mensaje = msg;
     } catch (e) { UI.productos.inv.mensaje = 'No se pudo leer el archivo. Verifica el formato.'; }
     render();
-    setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 4000);
+    setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 9000);
   };
   reader.readAsArrayBuffer(file);
 }
