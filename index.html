@@ -377,6 +377,7 @@ const DB = {
   ventas: seedIfMissing('sales', []),
   clientes: seedIfMissing('clientes', []),
   gastos: seedIfMissing('gastos', []),
+  trabajadores: seedIfMissing('trabajadores', []),
   usuarios: seedIfMissing('usuarios', USUARIOS_INICIALES),
   familias: seedIfMissing('familias', FAMILIAS_INICIALES),
 };
@@ -398,7 +399,7 @@ const UI = {
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false },
   productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
-  gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null },
+  gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null, mensaje: '', nomina: { open: false, sucursalId: null, mes: '' } },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
   tickets: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', busquedaFolio: '', detalleId: null, editando: null },
   reportes: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '' },
@@ -490,11 +491,18 @@ const TABLAS_SUPABASE = {
     aFila: (g) => ({
       id: g.id, fecha: g.fecha, sucursal_id: g.sucursalId, sucursal_nombre: g.sucursalNombre,
       tipo: g.tipo, concepto: g.concepto, monto: g.monto, nota: g.nota || null, es_fijo: !!g.esFijo,
+      origen_nomina: !!g.origenNomina, nomina_clave_mes: g.nominaClaveMes || null,
     }),
     deFila: (f) => ({
       id: f.id, fecha: f.fecha, sucursalId: f.sucursal_id, sucursalNombre: f.sucursal_nombre,
       tipo: f.tipo, concepto: f.concepto, monto: Number(f.monto) || 0, nota: f.nota, esFijo: !!f.es_fijo,
+      origenNomina: !!f.origen_nomina, nominaClaveMes: f.nomina_clave_mes || null,
     }),
+  },
+  trabajadores: {
+    tabla: 'trabajadores',
+    aFila: (t) => ({ id: t.id, sucursal_id: t.sucursalId, nombre: t.nombre, pago_por_dia: t.pagoPorDia }),
+    deFila: (f) => ({ id: f.id, sucursalId: f.sucursal_id, nombre: f.nombre, pagoPorDia: Number(f.pago_por_dia) || 0 }),
   },
   ventas: {
     tabla: 'ventas',
@@ -1441,6 +1449,7 @@ function h_cerrarModal() {
   UI.productos.inv.importPendiente = null;
   UI.clientes.formOpen = false;
   UI.gastos.formOpen = false;
+  UI.gastos.nomina.open = false;
   UI.usuarios.formUsuarioOpen = false;
   UI.usuarios.formSucursalOpen = false;
   UI.tickets.detalleId = null;
@@ -1685,6 +1694,7 @@ function renderModalRoot() {
   if (UI.productos.inv.showAgregar) return renderAgregarMaterialModal();
   if (UI.clientes.formOpen) return renderClienteFormModal();
   if (UI.gastos.formOpen) return renderGastoFormModal();
+  if (UI.gastos.nomina.open) return renderNominaModal();
   if (UI.usuarios.formUsuarioOpen) return renderUsuarioFormModal();
   if (UI.usuarios.formSucursalOpen) return renderSucursalFormModal();
   if (UI.tickets.editando) return renderTicketEditModal();
@@ -2690,7 +2700,7 @@ function renderGastos() {
   const fijosMes = mes.filter((g) => g.esFijo).reduce((s, g) => s + g.monto, 0);
   const variablesMes = mes.filter((g) => !g.esFijo).reduce((s, g) => s + g.monto, 0);
   return `
-    ${topbar('Gastos Sucursales', 'Control de gastos operativos por sucursal', `<button class="btn btn-accent" data-action="nuevoGasto">+ Nuevo gasto</button>`)}
+    ${topbar('Gastos Sucursales', 'Control de gastos operativos por sucursal', `<button class="btn btn-ghost" data-action="abrirNomina">👷 Nómina por sucursal</button><button class="btn btn-accent" data-action="nuevoGasto">+ Nuevo gasto</button>`)}
     <div class="view-body">
       <div class="kpi-grid">
         <div class="kpi"><div class="kpi-label">Gastos hoy</div><div class="kpi-value" style="color:var(--red);">${formatoMoneda(hoy.reduce((s, g) => s + g.monto, 0))}</div></div>
@@ -2700,6 +2710,7 @@ function renderGastos() {
         <div class="kpi"><div class="kpi-label">${escapeHtml(toluca ? toluca.nombre : 'Toluca Centro')} (mes)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(gastosTolucaMes)}</div></div>
         <div class="kpi"><div class="kpi-label">${escapeHtml(metepec ? metepec.nombre : 'Metepec')} (mes)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(gastosMetepecMes)}</div></div>
       </div>
+      ${UI.gastos.mensaje ? `<div style="background:var(--emerald-soft);color:var(--emerald-dark);border-radius:10px;padding:9px 14px;font-size:12.5px;margin-bottom:14px;max-width:560px;">${escapeHtml(UI.gastos.mensaje)}</div>` : ''}
       <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
         <select class="input" style="max-width:220px;" onchange="h_gastoFiltroSucursal(this.value)">
           <option value="todas" ${UI.gastos.filtroSucursal === 'todas' ? 'selected' : ''}>Todas las sucursales</option>
@@ -2805,6 +2816,7 @@ function h_guardarGasto() {
     sucursalId, sucursalNombre: suc ? suc.nombre : '', tipo: document.getElementById('gf-tipo').value,
     concepto, monto, nota: document.getElementById('gf-nota').value.trim(),
     esFijo: !!(document.getElementById('gf-fijo') && document.getElementById('gf-fijo').checked),
+    origenNomina: e ? !!e.origenNomina : false, nominaClaveMes: e ? (e.nominaClaveMes || null) : null,
   };
   db('gastos', (list) => {
     const existe = list.some((g) => g.id === gasto.id);
@@ -2813,6 +2825,151 @@ function h_guardarGasto() {
   UI.gastos.formOpen = false;
   render();
 }
+
+/* ---------------------------------------------------------------------
+ * NÓMINA POR SUCURSAL
+ * Cada sucursal puede tener uno o más trabajadores con su pago por día.
+ * "Generar" calcula el total del mes elegido usando los días reales de
+ * ese mes (28, 29, 30 o 31) y crea (o actualiza, si ya existía) un gasto
+ * fijo de tipo "Sueldos/Nomina" para esa sucursal y ese mes exacto.
+ * ------------------------------------------------------------------- */
+function diasDelMes(claveMes) {
+  const partes = String(claveMes || '').split('-').map(Number);
+  const anio = partes[0], mes = partes[1];
+  if (!anio || !mes) return 30;
+  return new Date(anio, mes, 0).getDate();
+}
+function nombreMesLegible(claveMes) {
+  const partes = String(claveMes || '').split('-').map(Number);
+  const anio = partes[0], mes = partes[1];
+  if (!anio || !mes) return '';
+  const texto = new Date(anio, mes - 1, 1).toLocaleDateString('es-MX', { month: 'long', year: 'numeric' });
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
+}
+function h_abrirNomina() {
+  UI.gastos.nomina = {
+    open: true,
+    sucursalId: (UI.gastos.filtroSucursal !== 'todas' ? UI.gastos.filtroSucursal : (DB.sucursales[0] ? DB.sucursales[0].id : null)),
+    mes: new Date().toISOString().slice(0, 7),
+  };
+  refreshModalRoot();
+}
+function h_cerrarNomina() { UI.gastos.nomina.open = false; refreshModalRoot(); }
+function h_nominaSucursal(id) { UI.gastos.nomina.sucursalId = id; refreshModalRoot(); }
+function h_nominaMes(v) { UI.gastos.nomina.mes = v; refreshModalRoot(); }
+function h_nominaAgregarTrabajador() {
+  const sucursalId = UI.gastos.nomina.sucursalId;
+  if (!sucursalId) return;
+  db('trabajadores', (list) => [...list, { id: genId('trab'), sucursalId, nombre: '', pagoPorDia: 0 }]);
+  refreshModalRoot();
+}
+function h_nominaQuitarTrabajador(id) {
+  if (!confirm('¿Quitar a este trabajador de la nómina de la sucursal?')) return;
+  db('trabajadores', (list) => list.filter((t) => t.id !== id));
+  refreshModalRoot();
+}
+function h_nominaEditarNombre(id, valor) {
+  db('trabajadores', (list) => list.map((t) => t.id === id ? { ...t, nombre: valor } : t));
+}
+function h_nominaEditarPago(id, valor) {
+  const pago = Number(valor);
+  db('trabajadores', (list) => list.map((t) => t.id === id ? { ...t, pagoPorDia: isNaN(pago) ? 0 : Math.max(0, pago) } : t));
+  const cont = document.getElementById('nomina-resumen');
+  if (cont) cont.innerHTML = renderNominaResumen();
+}
+function h_generarNomina() {
+  const n = UI.gastos.nomina;
+  const suc = DB.sucursales.find((s) => s.id === n.sucursalId);
+  if (!suc || !n.mes) return;
+  const trabajadores = DB.trabajadores.filter((t) => t.sucursalId === suc.id);
+  if (!trabajadores.length) return;
+  const dias = diasDelMes(n.mes);
+  const totalExacto = trabajadores.reduce((s, t) => s + (Number(t.pagoPorDia) || 0) * dias, 0);
+  const total = Math.round(totalExacto);
+  const detalle = trabajadores.map((t) => `${t.nombre || 'Sin nombre'}: ${formatoMoneda(t.pagoPorDia)}/día × ${dias} días = ${formatoMoneda(t.pagoPorDia * dias)}`).join('\n');
+  const existente = DB.gastos.find((g) => g.origenNomina && g.sucursalId === suc.id && g.nominaClaveMes === n.mes);
+  const gasto = {
+    id: existente ? existente.id : genId('gasto'),
+    fecha: existente ? existente.fecha : (n.mes + '-01'),
+    sucursalId: suc.id, sucursalNombre: suc.nombre,
+    tipo: 'Sueldos/Nomina',
+    concepto: 'Nómina de ' + nombreMesLegible(n.mes) + ' (' + trabajadores.length + ' trabajador' + (trabajadores.length > 1 ? 'es' : '') + ')',
+    monto: total,
+    nota: detalle,
+    esFijo: true,
+    origenNomina: true,
+    nominaClaveMes: n.mes,
+  };
+  db('gastos', (list) => {
+    const existe = list.some((g) => g.id === gasto.id);
+    return existe ? list.map((g) => g.id === gasto.id ? gasto : g) : [gasto, ...list];
+  });
+  UI.gastos.nomina.open = false;
+  UI.gastos.mensaje = (existente ? 'Se actualizó' : 'Se generó') + ' el gasto de nómina de ' + nombreMesLegible(n.mes) + ' para ' + suc.nombre + ': ' + formatoMoneda(total) + '.';
+  render();
+  setTimeout(() => { UI.gastos.mensaje = ''; render(); }, 8000);
+}
+function renderNominaResumen() {
+  const n = UI.gastos.nomina;
+  const suc = DB.sucursales.find((s) => s.id === n.sucursalId);
+  const trabajadores = suc ? DB.trabajadores.filter((t) => t.sucursalId === suc.id) : [];
+  if (!trabajadores.length || !n.mes) return '';
+  const dias = diasDelMes(n.mes);
+  const total = Math.round(trabajadores.reduce((s, t) => s + (Number(t.pagoPorDia) || 0) * dias, 0));
+  const yaExiste = DB.gastos.some((g) => g.origenNomina && g.sucursalId === (suc ? suc.id : null) && g.nominaClaveMes === n.mes);
+  return `
+    <div class="card" style="padding:12px 14px;">
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 6px;">${escapeHtml(nombreMesLegible(n.mes))} tiene <b style="color:var(--ink);">${dias} días</b></p>
+      ${trabajadores.map((t) => `<p style="font-size:12.5px;margin:2px 0;">${escapeHtml(t.nombre || 'Sin nombre')}: ${formatoMoneda(t.pagoPorDia)}/día × ${dias} días = <b>${formatoMoneda(t.pagoPorDia * dias)}</b></p>`).join('')}
+      <p style="font-weight:800;font-size:15px;color:var(--navy);margin:10px 0 0;border-top:1px solid var(--line);padding-top:8px;">Total del mes: ${formatoMoneda(total)}</p>
+      ${yaExiste ? `<p style="font-size:11px;color:var(--navy-light);margin:6px 0 0;">Ya existe un gasto de nómina generado para este mes en esta sucursal — al generar de nuevo se actualiza, no se duplica.</p>` : ''}
+    </div>
+  `;
+}
+function renderNominaModal() {
+  const n = UI.gastos.nomina;
+  const suc = DB.sucursales.find((s) => s.id === n.sucursalId);
+  const trabajadores = suc ? DB.trabajadores.filter((t) => t.sucursalId === suc.id) : [];
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>👷 Nómina por sucursal</h3>
+      <p style="color:var(--muted);font-size:12.5px;margin-top:2px;">Registra cuánto le pagas por día a cada trabajador de la sucursal; el sistema calcula solo el total del mes según si tiene 28, 30 o 31 días.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;">
+        <label class="field"><span class="field-label">Sucursal</span>
+          <select class="input" style="margin-top:4px;" onchange="h_nominaSucursal(this.value)">
+            ${DB.sucursales.map((s) => `<option value="${s.id}" ${s.id === n.sucursalId ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`).join('')}
+          </select>
+        </label>
+        <label class="field"><span class="field-label">Mes a calcular</span>
+          <input type="month" class="input" style="margin-top:4px;" value="${n.mes}" onchange="h_nominaMes(this.value)">
+        </label>
+      </div>
+
+      <p class="field-label" style="margin-top:18px;margin-bottom:8px;">Trabajadores en ${escapeHtml(suc ? suc.nombre : '')}${trabajadores.length ? ' (' + trabajadores.length + ')' : ''}</p>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${trabajadores.map((t) => `
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input class="input" style="flex:1;" placeholder="Nombre del trabajador" value="${escapeHtml(t.nombre)}" onchange="h_nominaEditarNombre('${t.id}', this.value)">
+            <div style="position:relative;width:130px;flex-shrink:0;">
+              <input type="number" min="0" step="0.5" class="input" style="text-align:right;padding-right:40px;" value="${t.pagoPorDia}" onchange="h_nominaEditarPago('${t.id}', this.value)">
+              <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--muted);pointer-events:none;">/día</span>
+            </div>
+            <button style="border:none;background:none;color:#CBD5E1;font-size:18px;line-height:1;flex-shrink:0;" data-action="nominaQuitarTrabajador" data-id="${t.id}" title="Quitar">×</button>
+          </div>`).join('') || `<p style="color:var(--muted);font-size:12.5px;margin:0;">Aún no tienes trabajadores registrados en esta sucursal.</p>`}
+      </div>
+      <button class="btn btn-ghost" style="margin-top:10px;" data-action="nominaAgregarTrabajador">+ Agregar trabajador</button>
+
+      <div id="nomina-resumen" style="margin-top:16px;">${renderNominaResumen()}</div>
+
+      <div style="display:flex;gap:10px;margin-top:18px;">
+        <button class="btn btn-ghost" style="flex:1;" data-action="cerrarNomina">Cerrar</button>
+        <button class="btn btn-primary" style="flex:1;" data-action="generarNomina" ${trabajadores.length ? '' : 'disabled'}>Generar gasto de este mes</button>
+      </div>
+    </div>
+  `, '540px');
+}
+
 /* ---------------------------------------------------------------------
  * REPORTE PRODUCTOS
  * ------------------------------------------------------------------- */
