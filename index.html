@@ -1044,6 +1044,23 @@ function renderSyncBadge() {
 function h_verErroresSync() { UI.syncErroresOpen = true; refreshModalRoot(); }
 function h_cerrarErroresSync() { UI.syncErroresOpen = false; refreshModalRoot(); }
 function h_borrarErroresSync() { save(SYNC_ERRORES_KEY, []); refreshModalRoot(); }
+/** Vuelve a intentar subir TODO lo que se tiene guardado localmente, ignorando qué tanto ya se
+ *  había intentado antes. Sirve para cuando el problema (por ejemplo una tabla o columna que no
+ *  existía en la base de datos compartida) ya se corrigió del lado de Supabase: las operaciones
+ *  que fallaron 5 veces se habían descartado para no trabarse, así que sin esto nunca se hubieran
+ *  vuelto a intentar solas. Esto no borra ni cambia nada de lo que ya está guardado en este
+ *  aparato — solo lo vuelve a mandar. */
+function h_reintentarTodoSync() {
+  if (!SUPABASE_ACTIVO || !sb) return;
+  Object.keys(TABLAS_SUPABASE).forEach((key) => {
+    ultimoSyncSnapshot[key] = [];
+    sincronizarConSupabase(key);
+  });
+  save(SYNC_ERRORES_KEY, []);
+  UI.syncErroresOpen = false;
+  refreshModalRoot();
+  render();
+}
 function renderErroresSyncModal() {
   const errores = erroresSync().slice().reverse();
   return modalWrap(`
@@ -1057,9 +1074,11 @@ function renderErroresSyncModal() {
             <p style="font-size:12px;color:var(--red);margin:2px 0 0;">${escapeHtml(e.mensaje)}</p>
           </div>`).join('') : '<p style="color:var(--muted);font-size:12.5px;text-align:center;padding:14px 0;">Sin errores guardados.</p>'}
       </div>
-      <div style="display:flex;gap:10px;margin-top:18px;">
+      <button class="btn btn-primary" style="width:100%;margin-top:18px;" data-action="reintentarTodoSync">🔄 Reintentar subir todo ahora</button>
+      <p style="font-size:11px;color:var(--muted);margin:6px 0 0;text-align:center;">Úsalo después de corregir el problema en Supabase (por ejemplo, correr el SQL que faltaba) — no borra nada de este aparato, solo lo vuelve a mandar.</p>
+      <div style="display:flex;gap:10px;margin-top:12px;">
         <button class="btn btn-ghost" style="flex:1;" data-action="borrarErroresSync">Borrar esta lista</button>
-        <button class="btn btn-primary" style="flex:1;" data-action="cerrarErroresSync">Cerrar</button>
+        <button class="btn btn-ghost" style="flex:1;" data-action="cerrarErroresSync">Cerrar</button>
       </div>
     </div>
   `, '480px');
