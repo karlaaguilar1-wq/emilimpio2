@@ -1,3 +1,10 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
 <title>Emilimpio Brayam</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -396,7 +403,7 @@ const UI = {
   syncEstado: 'inactivo', // 'inactivo' | 'sincronizando' | 'ok' | 'sin_conexion' (solo aplica si SUPABASE_ACTIVO)
   syncErroresOpen: false,
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
-  venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false },
+  venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false, catalogoAbierto: false },
   productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null, mensaje: '', nomina: { open: false, sucursalId: null, mes: '' } },
@@ -1297,8 +1304,10 @@ function renderVenta() {
     <div class="venta-split">
       <div class="venta-left ${UI.venta.carrito.length ? 'con-barra-movil' : ''}">
         ${renderVentaAccesoRapido(suc)}
-        <p class="venta-sub-label">O elige del catálogo</p>
-        <div id="venta-grid" class="prod-grid">${renderVentaGrid()}</div>
+        <button class="btn-link" style="margin:2px 0 14px;padding:8px 2px;font-size:13px;" data-action="toggleCatalogoVenta">
+          ${UI.venta.catalogoAbierto ? '▲ Ocultar catálogo completo' : `▼ Ver catálogo completo (${DB.productos.length} productos)`}
+        </button>
+        ${UI.venta.catalogoAbierto ? `<div id="venta-grid" class="prod-grid">${renderVentaGrid()}</div>` : ''}
       </div>
       <div class="venta-cart">${renderCart()}</div>
     </div>
@@ -1455,6 +1464,14 @@ function h_ventaBusquedaKey(e) {
   const suc = sucursalActual();
   const match = productosCoincidentes(UI.venta.busqueda).find((p) => !suc || getStock(suc.id, p.id) > 0);
   if (match) h_abrirQty(match.id);
+}
+
+/** El catálogo completo (todos los productos) empieza oculto en la pantalla de Venta: lo normal es
+ *  buscar o usar los accesos rápidos, y así no hay que bajar entre decenas de productos para llegar
+ *  al carrito. Este botón lo despliega para quien prefiera elegir viendo todo el catálogo. */
+function h_toggleCatalogoVenta() {
+  UI.venta.catalogoAbierto = !UI.venta.catalogoAbierto;
+  render();
 }
 
 function h_abrirQty(id) {
@@ -3800,3 +3817,6 @@ render();
 if (SUPABASE_ACTIVO) hidratarDesdeSupabase();
 /*__END__*/
 </script>
+
+</body>
+</html>
