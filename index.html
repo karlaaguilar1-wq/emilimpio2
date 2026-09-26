@@ -1,10 +1,3 @@
-<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-</head>
-<body>
 <title>Emilimpio Brayam</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -249,6 +242,25 @@
   .cart-scroll { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
   .cart-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--ground); border-radius: var(--radius-sm); padding: 10px 13px; }
 
+  /* ---------- Conteo físico ---------- */
+  .conteo-row { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line-soft); }
+  .conteo-row:last-child { border-bottom: none; }
+  .conteo-info { flex: 1; min-width: 0; }
+  .conteo-nombre { font-weight: 700; color: var(--navy); font-size: 13.5px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conteo-sub { font-size: 11.5px; color: var(--muted); margin: 1px 0 0; }
+  .conteo-actual { font-weight: 600; color: var(--ink-soft); font-size: 12.5px; flex-shrink: 0; width: 60px; text-align: right; }
+  .conteo-input-wrap { position: relative; flex-shrink: 0; }
+  .conteo-input { width: 98px; text-align: right; padding-right: 36px !important; }
+  .conteo-input-unidad { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 11.5px; color: var(--muted); pointer-events: none; }
+  .conteo-diff { flex-shrink: 0; width: 82px; text-align: right; font-size: 12px; }
+  .conteo-quitar { border: none; background: none; color: #CBD5E1; font-size: 20px; line-height: 1; flex-shrink: 0; cursor: pointer; padding: 4px; }
+  .conteo-quitar:hover { color: var(--red); }
+  @media (max-width: 640px) {
+    .conteo-row { flex-wrap: wrap; }
+    .conteo-actual { order: 3; width: auto; }
+    .conteo-diff { order: 4; width: auto; }
+  }
+
   /* ---------- Ticket ---------- */
   .ticket { width: 320px; max-width: 100%; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 22px; font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); box-shadow: var(--shadow-card); }
   .ticket hr { border: none; border-top: 1px dashed var(--line); margin: 12px 0; }
@@ -384,7 +396,7 @@ const UI = {
   syncErroresOpen: false,
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false },
-  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null } },
+  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', formOpen: false, editando: null },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
@@ -2138,15 +2150,16 @@ function renderInventarioTab() {
   return `
     <label class="field" style="max-width:340px;margin-bottom:18px;">
       <span class="field-label">¿En qué sucursal vas a hacer el inventario?</span>
-      <select class="input" style="margin-top:6px;" onchange="h_invSucursal(this.value)">
+      <select class="input" style="margin-top:6px;" onchange="h_invSucursal(this.value)" ${UI.productos.inv.conteoActivo ? 'disabled' : ''}>
         ${DB.sucursales.map((s) => `<option value="${s.id}" ${s.id === sucId ? 'selected' : ''}>${escapeHtml(s.nombre)}</option>`).join('')}
       </select>
     </label>
     ${UI.productos.inv.mensaje ? `<div style="background:var(--emerald-soft);color:var(--emerald-dark);border-radius:10px;padding:9px 14px;font-size:12.5px;margin-bottom:14px;max-width:520px;">${escapeHtml(UI.productos.inv.mensaje)}</div>` : ''}
-    ${suc ? `
+    ${suc ? (UI.productos.inv.conteoActivo ? renderConteoFisico(sucId, suc) : `
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px;">
         <label class="btn btn-ghost" style="margin:0;">⬆️ Subir inventario con Excel<input type="file" accept=".xlsx,.xls,.csv" class="visually-hidden" onchange="h_importarInventario(this.files[0])"></label>
         <button class="btn btn-ghost" data-action="exportarInventario">⬇️ Descargar inventario en Excel</button>
+        <button class="btn btn-ghost" data-action="abrirConteo">📋 Conteo físico</button>
         <button class="btn btn-accent" data-action="abrirAgregarMaterial">+ Agregar material individual</button>
       </div>
       <div class="table-wrap"><table class="dtable">
@@ -2158,13 +2171,136 @@ function renderInventarioTab() {
           }).join('') || `<tr><td colspan="2" class="empty-row">Primero agrega productos en la pestaña Productos.</td></tr>`}
         </tbody>
       </table></div>
-    ` : ''}
+    `) : ''}
   `;
 }
 function h_invSucursal(id) {
   UI.productos.inv.sucursalId = id;
   const cont = document.getElementById('productos-tab-body');
   if (cont) cont.innerHTML = renderInventarioTab();
+}
+
+/* ---------------------------------------------------------------------
+ * CONTEO FÍSICO
+ * Muestra, producto por producto, lo que el sistema espera tener contra
+ * lo que en verdad se contó a mano, con la diferencia (balance) al vuelo.
+ * Al aplicar, cada producto capturado se FIJA (no se suma) a la cantidad
+ * contada — es una reconciliación, no un ajuste. Si se marca "es el
+ * inventario inicial", los productos que se dejaron en blanco arrancan
+ * en 0 (se asume que de verdad no había nada de eso); si no, los que se
+ * dejan en blanco simplemente no se tocan.
+ * ------------------------------------------------------------------- */
+function h_abrirConteo() {
+  UI.productos.inv.conteoActivo = true;
+  UI.productos.inv.conteoValores = {};
+  UI.productos.inv.conteoExcluidos = {};
+  UI.productos.inv.conteoEsInicial = false;
+  const cont = document.getElementById('productos-tab-body');
+  if (cont) cont.innerHTML = renderInventarioTab();
+}
+function h_cerrarConteo() {
+  UI.productos.inv.conteoActivo = false;
+  UI.productos.inv.conteoValores = {};
+  UI.productos.inv.conteoExcluidos = {};
+  UI.productos.inv.conteoEsInicial = false;
+  const cont = document.getElementById('productos-tab-body');
+  if (cont) cont.innerHTML = renderInventarioTab();
+}
+function renderConteoFisico(sucId, suc) {
+  const inv = UI.productos.inv;
+  const productos = DB.productos.filter((p) => !inv.conteoExcluidos[p.id]);
+  return `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+      <div>
+        <h3 style="margin:0;">📋 Conteo físico — ${escapeHtml(suc.nombre)}</h3>
+        <p style="color:var(--muted);font-size:12.5px;margin:3px 0 0;max-width:480px;">A la izquierda ves lo que el sistema espera tener; captura a la derecha lo que de verdad contaste y aquí mismo verás el balance (la diferencia).</p>
+      </div>
+      <button class="btn btn-ghost" data-action="cerrarConteo">✕ Cancelar conteo</button>
+    </div>
+    <div class="card" style="padding:4px 16px;margin-bottom:16px;">
+      ${productos.map((p) => {
+        const esperado = getStock(sucId, p.id);
+        const unidad = p.piezas ? 'pzas' : 'L';
+        const valorTxt = inv.conteoValores[p.id];
+        return `
+        <div class="conteo-row" id="conteo-row-${p.id}">
+          <div class="conteo-info">
+            <p class="conteo-nombre">${escapeHtml(p.nombre)}</p>
+            <p class="conteo-sub">${escapeHtml(familiaDe(p))}</p>
+          </div>
+          <span class="conteo-actual">${esperado} ${unidad}</span>
+          <div class="conteo-input-wrap">
+            <input type="number" min="0" step="0.5" class="input conteo-input" placeholder="0"
+              value="${valorTxt == null ? '' : escapeHtml(String(valorTxt))}"
+              oninput="h_conteoInput('${p.id}', this.value)">
+            <span class="conteo-input-unidad">${unidad}</span>
+          </div>
+          <span class="conteo-diff" id="conteo-diff-${p.id}">${renderConteoDiff(p.id, sucId)}</span>
+          <button class="conteo-quitar" data-action="conteoQuitarFila" data-id="${p.id}" title="Quitar de este conteo">—</button>
+        </div>`;
+      }).join('') || `<p class="empty-row">Primero agrega productos en la pestaña Productos.</p>`}
+    </div>
+    <label style="display:flex;align-items:center;gap:9px;cursor:pointer;">
+      <input type="checkbox" style="width:17px;height:17px;flex-shrink:0;" ${inv.conteoEsInicial ? 'checked' : ''} onchange="h_conteoToggleInicial(this.checked)">
+      <span style="font-size:13px;color:var(--ink);">Es el inventario inicial (arranque del sistema) <span style="font-weight:400;color:var(--muted);">— lo que dejes en blanco arranca en 0</span></span>
+    </label>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+      <button class="btn btn-primary" data-action="aplicarConteo">✅ Aplicar conteo</button>
+    </div>
+  `;
+}
+function renderConteoDiff(productoId, sucId) {
+  const valorTxt = UI.productos.inv.conteoValores[productoId];
+  if (valorTxt == null || String(valorTxt).trim() === '') return '';
+  const valor = Number(String(valorTxt).trim().replace(',', '.'));
+  if (isNaN(valor)) return '';
+  const diff = Number((valor - getStock(sucId, productoId)).toFixed(2));
+  if (diff === 0) return `<span style="color:var(--muted);">sin diferencia</span>`;
+  return `<span style="color:${diff > 0 ? 'var(--emerald-dark)' : 'var(--red)'};font-weight:700;">${diff > 0 ? '+' : ''}${diff}</span>`;
+}
+function h_conteoInput(productoId, value) {
+  UI.productos.inv.conteoValores[productoId] = value;
+  const diff = document.getElementById('conteo-diff-' + productoId);
+  if (diff) diff.innerHTML = renderConteoDiff(productoId, UI.productos.inv.sucursalId);
+}
+function h_conteoQuitarFila(productoId) {
+  UI.productos.inv.conteoExcluidos[productoId] = true;
+  delete UI.productos.inv.conteoValores[productoId];
+  const row = document.getElementById('conteo-row-' + productoId);
+  if (row) row.remove();
+}
+function h_conteoToggleInicial(checked) {
+  UI.productos.inv.conteoEsInicial = !!checked;
+}
+function h_aplicarConteo() {
+  const inv = UI.productos.inv;
+  const sucId = inv.sucursalId;
+  const productos = DB.productos.filter((p) => !inv.conteoExcluidos[p.id]);
+  let aplicados = 0;
+  productos.forEach((p) => {
+    const valorTxt = inv.conteoValores[p.id];
+    const tieneValor = valorTxt != null && String(valorTxt).trim() !== '';
+    const valor = tieneValor ? Number(String(valorTxt).trim().replace(',', '.')) : NaN;
+    if (tieneValor && !isNaN(valor)) {
+      fijarStock(sucId, p.id, Math.max(0, valor));
+      aplicados++;
+    } else if (inv.conteoEsInicial) {
+      // En un conteo de arranque, lo que se deja en blanco se asume en 0 (no se tenía nada de eso).
+      fijarStock(sucId, p.id, 0);
+      aplicados++;
+    }
+  });
+  const suc = DB.sucursales.find((s) => s.id === sucId);
+  const nombreSuc = suc ? suc.nombre : '';
+  inv.mensaje = (inv.conteoEsInicial
+    ? 'Se guardó como el inventario inicial de ' + nombreSuc + ': '
+    : 'Se aplicó el conteo físico de ' + nombreSuc + ': ') + aplicados + ' de ' + productos.length + ' productos actualizados.';
+  inv.conteoActivo = false;
+  inv.conteoValores = {};
+  inv.conteoExcluidos = {};
+  inv.conteoEsInicial = false;
+  render();
+  setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 9000);
 }
 function h_abrirAgregarMaterial() {
   UI.productos.inv.showAgregar = true;
@@ -3460,6 +3596,3 @@ render();
 if (SUPABASE_ACTIVO) hidratarDesdeSupabase();
 /*__END__*/
 </script>
-
-</body>
-</html>
