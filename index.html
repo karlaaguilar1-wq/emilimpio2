@@ -1868,7 +1868,7 @@ function renderCatalogoTab() {
         ${owner ? `<button class="btn btn-ghost" style="margin-top:20px;" data-action="abrirFamilias">🏷️ Familias</button>` : ''}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-ghost" data-action="exportarCatalogo">⬇️ Descargar Excel</button>
+        ${owner ? `<button class="btn btn-ghost" data-action="exportarCatalogo">⬇️ Descargar Excel</button>` : ''}
         <label class="btn btn-ghost" style="margin:0;">⬆️ Subir Excel<input type="file" accept=".xlsx,.xls,.csv" class="visually-hidden" onchange="h_importarCatalogo(this.files[0])"></label>
         <button class="btn btn-accent" data-action="nuevoProducto">+ Nuevo producto</button>
       </div>
@@ -2096,6 +2096,7 @@ function h_guardarProducto() {
 }
 
 function h_exportarCatalogo() {
+  if (efectivoRol() !== 'OWNER') return; // los precios de compra (costo) son solo del Dueño
   const rows = DB.productos.map((p) => ({ nombre: p.nombre, precioMenudeo: p.precioMenudeo, precioMayoreo: p.precioMayoreo, costo: p.costo, tipo: p.tipo, familia: familiaDe(p), piezas: p.piezas || '' }));
   const ws = XLSX.utils.json_to_sheet(rows, { header: ['nombre', 'precioMenudeo', 'precioMayoreo', 'costo', 'tipo', 'familia', 'piezas'] });
   const wb = XLSX.utils.book_new();
