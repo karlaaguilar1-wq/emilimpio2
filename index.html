@@ -223,10 +223,28 @@
   .venta-split { display: grid; grid-template-columns: 1fr 380px; align-items: start; flex: 1; min-height: 0; }
   .venta-left { overflow-y: auto; padding: 6px 20px 30px; height: 100%; }
   .venta-cart { border-left: 1px solid var(--line); background: var(--surface); height: 100%; display: flex; flex-direction: column; }
+  .venta-mobile-bar { display: none; }
   @media (max-width: 980px) {
     .venta-split { grid-template-columns: 1fr; flex: none; height: auto; }
     .venta-cart { border-left: none; border-top: 1px solid var(--line); height: auto; }
+    .venta-mobile-bar {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; background: var(--surface);
+      border-top: 1px solid var(--line); padding: 10px 16px; box-shadow: 0 -6px 18px rgba(15,23,42,.10);
+    }
+    .venta-left.con-barra-movil { padding-bottom: 90px; }
   }
+
+  /* ---------- Acceso rápido (Venta) ---------- */
+  .quick-row { display: flex; gap: 10px; overflow-x: auto; padding: 2px 0 14px; }
+  .quick-chip {
+    flex-shrink: 0; display: flex; align-items: center; gap: 9px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 10px 14px; box-shadow: var(--shadow-card);
+    text-align: left;
+  }
+  .quick-chip:not(:disabled):hover { border-color: var(--navy-light); }
+  .quick-chip:disabled { opacity: .4; cursor: not-allowed; }
+  .quick-chip .prod-name { margin-top: 0; font-size: 12.5px; }
 
   .cart-scroll { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
   .cart-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--ground); border-radius: var(--radius-sm); padding: 10px 13px; }
@@ -365,8 +383,8 @@ const UI = {
   syncEstado: 'inactivo', // 'inactivo' | 'sincronizando' | 'ok' | 'sin_conexion' (solo aplica si SUPABASE_ACTIVO)
   syncErroresOpen: false,
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
-  venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null },
-  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false } },
+  venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false },
+  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', formOpen: false, editando: null },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
@@ -428,12 +446,12 @@ const TABLAS_SUPABASE = {
     aFila: (p) => ({
       id: p.id, nombre: p.nombre, foto_url: p.foto || null, tipo: p.tipo, familia: familiaDe(p),
       precio_menudeo: p.precioMenudeo, precio_mayoreo: p.precioMayoreo, costo: p.costo,
-      piezas: p.piezas != null ? p.piezas : null,
+      piezas: p.piezas != null ? p.piezas : null, favorito: !!p.favorito,
     }),
     deFila: (f) => ({
       id: f.id, nombre: f.nombre, foto: f.foto_url || null, tipo: f.tipo, familia: f.familia,
       precioMenudeo: Number(f.precio_menudeo) || 0, precioMayoreo: Number(f.precio_mayoreo) || 0, costo: Number(f.costo) || 0,
-      piezas: f.piezas != null ? Number(f.piezas) : undefined,
+      piezas: f.piezas != null ? Number(f.piezas) : undefined, favorito: !!f.favorito,
     }),
   },
   inventario: {
@@ -1227,14 +1245,65 @@ function renderVenta() {
       </div>
     </div>
     <div class="venta-split">
-      <div class="venta-left">
+      <div class="venta-left ${UI.venta.carrito.length ? 'con-barra-movil' : ''}">
+        ${renderVentaAccesoRapido(suc)}
         <p class="venta-sub-label">O elige del catálogo</p>
         <div id="venta-grid" class="prod-grid">${renderVentaGrid()}</div>
       </div>
       <div class="venta-cart">${renderCart()}</div>
     </div>
+    <div class="venta-mobile-bar" id="venta-mobile-bar">${renderVentaMobileBar()}</div>
     <div id="modal-root">${renderModalRoot()}</div>
   `;
+}
+
+function renderVentaAccesoRapido(suc) {
+  const favoritos = DB.productos.filter((p) => p.favorito);
+  if (!favoritos.length) return '';
+  return `
+    <p class="venta-sub-label">⚡ Acceso rápido</p>
+    <div class="quick-row">
+      ${favoritos.map((p) => {
+        const stock = suc ? getStock(suc.id, p.id) : 0;
+        const sinStock = stock <= 0;
+        return `<button class="quick-chip" ${sinStock ? 'disabled' : ''} data-action="abrirQty" data-id="${p.id}">
+          ${p.foto ? `<img src="${p.foto}" style="width:26px;height:26px;border-radius:7px;object-fit:cover;flex-shrink:0;" alt="">` : `<span style="font-size:18px;flex-shrink:0;">${TIPO_ICON[p.tipo]}</span>`}
+          <div style="min-width:0;">
+            <p class="prod-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">${escapeHtml(p.nombre)}</p>
+            <p style="font-size:10.5px;color:${sinStock ? 'var(--red)' : 'var(--muted)'};margin:2px 0 0;">${sinStock ? 'Sin stock' : formatoMoneda(p.precioMenudeo) + ' /L'}</p>
+          </div>
+        </button>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderVentaMobileBar() {
+  const c = ventaComputo();
+  if (!c.lineas.length) return '';
+  return `
+    <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+      <span style="font-size:20px;flex-shrink:0;">🛒</span>
+      <div style="min-width:0;">
+        <p style="font-size:11px;color:var(--muted);margin:0;">${c.lineas.length} producto(s)</p>
+        <p style="font-weight:800;color:var(--navy);font-size:16px;margin:0;">${formatoMoneda(c.total)}</p>
+      </div>
+    </div>
+    <button class="btn btn-accent" style="padding:11px 18px;flex-shrink:0;" data-action="verCarritoMovil">Ver carrito</button>
+  `;
+}
+function h_verCarritoMovil() { UI.venta.carritoMovilOpen = true; refreshModalRoot(); }
+function h_cerrarCarritoMovil() { UI.venta.carritoMovilOpen = false; refreshModalRoot(); }
+function renderCarritoMovilModal() {
+  return modalWrap(`
+    <div style="display:flex;flex-direction:column;max-height:80vh;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 0;">
+        <h3 style="margin:0;">Tu carrito</h3>
+        <button style="border:none;background:none;color:var(--muted);font-size:22px;line-height:1;" data-action="cerrarCarritoMovil">×</button>
+      </div>
+      ${renderCart()}
+    </div>
+  `, '440px');
 }
 
 function productosCoincidentes(q) {
@@ -1351,15 +1420,20 @@ function h_cerrarModal() {
   UI.venta.showCliente = false;
   UI.venta.showPago = false;
   UI.venta.showCorte = false;
+  UI.venta.carritoMovilOpen = false;
   UI.productos.formOpen = false;
+  UI.productos.familiasModalOpen = false;
   UI.productos.inv.showAgregar = false;
   UI.productos.inv.carrito = [];
+  UI.productos.inv.importModoOpen = false;
+  UI.productos.inv.importPendiente = null;
   UI.clientes.formOpen = false;
   UI.gastos.formOpen = false;
   UI.usuarios.formUsuarioOpen = false;
   UI.usuarios.formSucursalOpen = false;
   UI.tickets.detalleId = null;
   UI.tickets.editando = null;
+  UI.syncErroresOpen = false;
   refreshModalRoot();
 }
 
@@ -1522,6 +1596,7 @@ function h_confirmarCobro() {
     db('clientes', (cs) => cs.map((cl) => cl.id === clienteId ? { ...cl, compras: cl.compras + 1, totalGastado: Number((cl.totalGastado + venta.total).toFixed(2)) } : cl));
   }
   UI.venta.showPago = false;
+  UI.venta.carritoMovilOpen = false;
   UI.venta.ventaFinalizada = venta;
   render();
 }
@@ -1530,6 +1605,7 @@ function h_nuevaVenta() {
   UI.venta.carrito = [];
   UI.venta.clienteAsignado = null;
   UI.venta.ventaFinalizada = null;
+  UI.venta.carritoMovilOpen = false;
   render();
 }
 
@@ -1602,6 +1678,8 @@ function renderModalRoot() {
   if (UI.tickets.editando) return renderTicketEditModal();
   if (UI.tickets.detalleId) return renderTicketDetalleModal();
   if (UI.syncErroresOpen) return renderErroresSyncModal();
+  if (UI.venta.carritoMovilOpen) return renderCarritoMovilModal();
+  if (UI.productos.inv.importModoOpen) return renderImportModoModal();
   return '';
 }
 
@@ -1862,6 +1940,10 @@ function renderProductoFormModal() {
         ${owner ? `<label class="field"><span class="field-label">Costo /L</span><input id="pf-costo" type="number" class="input" style="margin-top:4px;" value="${editando ? editando.costo : 0}"></label>` : ''}
       </div>
       <label class="field"><span class="field-label">Piezas (opcional)</span><input id="pf-piezas" type="number" class="input" style="margin-top:4px;" value="${editando && editando.piezas ? editando.piezas : ''}"></label>
+      <label style="display:flex;align-items:center;gap:9px;margin-top:14px;cursor:pointer;">
+        <input id="pf-favorito" type="checkbox" style="width:17px;height:17px;" ${editando && editando.favorito ? 'checked' : ''}>
+        <span style="font-size:13px;color:var(--ink);">⚡ Acceso rápido en Venta <span style="font-weight:400;color:var(--muted);">(aparece arriba, sin tener que buscarlo)</span></span>
+      </label>
       <div style="display:flex;gap:10px;margin-top:18px;">
         <button class="btn btn-ghost" style="flex:1;" data-action="cerrarProductoForm">Cancelar</button>
         <button class="btn btn-primary" style="flex:1;" data-action="guardarProducto">Guardar</button>
@@ -1991,6 +2073,7 @@ function h_guardarProducto() {
     precioMayoreo: Number(document.getElementById('pf-mayoreo').value) || 0,
     costo: owner ? (Number(document.getElementById('pf-costo').value) || 0) : (editando ? editando.costo : 0),
     piezas: document.getElementById('pf-piezas').value ? Number(document.getElementById('pf-piezas').value) : undefined,
+    favorito: !!(document.getElementById('pf-favorito') && document.getElementById('pf-favorito').checked),
   };
   db('productos', (list) => {
     const existe = list.some((p) => p.id === producto.id);
@@ -2275,14 +2358,13 @@ function normalizarFilaExcel(r) {
 }
 function h_importarInventario(file) {
   if (!file) return;
-  const sucId = UI.productos.inv.sucursalId;
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const wb = XLSX.read(reader.result, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' }).map(normalizarFilaExcel);
-      let n = 0;
+      const filasValidas = [];
       const noEncontrados = [];
       const sinCantidad = [];
       rows.filter((r) => String(r.nombre || '').trim()).forEach((r) => {
@@ -2294,18 +2376,61 @@ function h_importarInventario(file) {
         // Si la celda de cantidad viene vacía o con algo que no es un número, NO tocamos el stock
         // de ese producto (mejor dejarlo como estaba que ponerlo en 0 por error).
         if (valorTexto === '' || isNaN(valor)) { sinCantidad.push(nombreFila); return; }
-        fijarStock(sucId, producto.id, valor);
-        n++;
+        filasValidas.push({ productoId: producto.id, valor });
       });
-      let msg = 'Se actualizó el stock de ' + n + ' de ' + rows.length + ' productos del archivo.';
-      if (noEncontrados.length) msg += ' No se encontraron ' + noEncontrados.length + ' (revisa que el nombre sea idéntico al del catálogo): ' + noEncontrados.slice(0, 5).join(', ') + (noEncontrados.length > 5 ? '…' : '') + '.';
-      if (sinCantidad.length) msg += ' ' + sinCantidad.length + ' no tenían una cantidad válida y se dejaron sin cambios.';
-      UI.productos.inv.mensaje = msg;
-    } catch (e) { UI.productos.inv.mensaje = 'No se pudo leer el archivo. Verifica el formato.'; }
-    render();
-    setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 9000);
+      // No se aplica todavía: primero se le pregunta al usuario si quiere sustituir el stock
+      // actual por el del archivo, o sumarlo a lo que ya hay (ver h_confirmarImportModo).
+      UI.productos.inv.importPendiente = { filasValidas, noEncontrados, sinCantidad, totalFilas: rows.length };
+      UI.productos.inv.importModoOpen = true;
+      refreshModalRoot();
+    } catch (e) {
+      UI.productos.inv.mensaje = 'No se pudo leer el archivo. Verifica el formato.';
+      render();
+      setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 6000);
+    }
   };
   reader.readAsArrayBuffer(file);
+}
+function h_cerrarImportModo() {
+  UI.productos.inv.importModoOpen = false;
+  UI.productos.inv.importPendiente = null;
+  refreshModalRoot();
+}
+function h_confirmarImportModo(id, modo) {
+  const pend = UI.productos.inv.importPendiente;
+  if (!pend) return;
+  const sucId = UI.productos.inv.sucursalId;
+  pend.filasValidas.forEach(({ productoId, valor }) => {
+    if (modo === 'sumar') ajustarStock(sucId, productoId, valor);
+    else fijarStock(sucId, productoId, valor);
+  });
+  let msg = (modo === 'sumar' ? 'Se sumó' : 'Se sustituyó') + ' el stock de ' + pend.filasValidas.length + ' de ' + pend.totalFilas + ' productos del archivo.';
+  if (pend.noEncontrados.length) msg += ' No se encontraron ' + pend.noEncontrados.length + ' (revisa que el nombre sea idéntico al del catálogo): ' + pend.noEncontrados.slice(0, 5).join(', ') + (pend.noEncontrados.length > 5 ? '…' : '') + '.';
+  if (pend.sinCantidad.length) msg += ' ' + pend.sinCantidad.length + ' no tenían una cantidad válida y se dejaron sin cambios.';
+  UI.productos.inv.mensaje = msg;
+  UI.productos.inv.importModoOpen = false;
+  UI.productos.inv.importPendiente = null;
+  render();
+  setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 9000);
+}
+function renderImportModoModal() {
+  const pend = UI.productos.inv.importPendiente;
+  if (!pend) return '';
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>¿Cómo quieres aplicar este archivo?</h3>
+      <p style="font-size:12.5px;color:var(--muted);margin-top:6px;">Se encontraron ${pend.filasValidas.length} de ${pend.totalFilas} productos del archivo con una cantidad válida.</p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px;">
+        <button class="btn btn-primary" style="justify-content:flex-start;text-align:left;padding:14px;height:auto;" data-action="confirmarImportModo" data-arg="sustituir">
+          <div><p style="font-weight:700;margin:0;">🔁 Sustituir</p><p style="font-weight:400;font-size:11.5px;margin:2px 0 0;opacity:.85;">El número del archivo reemplaza el stock actual de cada producto.</p></div>
+        </button>
+        <button class="btn btn-ghost" style="justify-content:flex-start;text-align:left;padding:14px;height:auto;" data-action="confirmarImportModo" data-arg="sumar">
+          <div><p style="font-weight:700;margin:0;color:var(--ink);">➕ Sumar</p><p style="font-weight:400;font-size:11.5px;margin:2px 0 0;color:var(--muted);">El número del archivo se agrega al stock que ya hay (por ejemplo, para registrar una entrada nueva).</p></div>
+        </button>
+      </div>
+      <button class="btn btn-ghost" style="width:100%;margin-top:16px;" data-action="cerrarImportModo">Cancelar</button>
+    </div>
+  `, '440px');
 }
 
 /* ---------------------------------------------------------------------
