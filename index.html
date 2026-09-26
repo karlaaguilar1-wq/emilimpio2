@@ -674,9 +674,20 @@ async function hidratarDesdeSupabase() {
       const { data, error } = await sb.from(conv.tabla).select('*');
       if (error || !data) continue;
       const lista = data.map(conv.deFila);
-      DB[key] = lista;
-      save(key, lista);
+      // No se reemplaza sin más lo que ya había en este aparato: si algo se guardó aquí pero
+      // todavía no llega al servidor (por ejemplo porque en ese momento faltaba una columna o
+      // tabla, como pasó con "gastos" y "trabajadores"), conservarlo evita que una recarga de
+      // página lo borre de la nada. Lo que sí venga del servidor manda sobre la copia local.
+      const idDe = conv.idDe || ((x) => x.id);
+      const idsDelServidor = new Set(lista.map(idDe));
+      const localesSinSubirTodavia = (DB[key] || []).filter((x) => !idsDelServidor.has(idDe(x)));
+      const fusionada = lista.concat(localesSinSubirTodavia);
+      DB[key] = fusionada;
+      save(key, fusionada);
+      // El snapshot queda como lo que SÍ confirmó el servidor: así, lo que se conservó localmente
+      // se sigue viendo como "pendiente de subir" y este mismo ciclo lo vuelve a encolar solo.
       ultimoSyncSnapshot[key] = JSON.parse(JSON.stringify(lista));
+      if (localesSinSubirTodavia.length) sincronizarConSupabase(key);
       huboExito = true;
     } catch (e) { /* sin conexión: seguimos con lo que ya había guardado localmente */ }
   }
