@@ -271,6 +271,30 @@
   /* ---------- Ticket ---------- */
   .ticket { width: 320px; max-width: 100%; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 22px; font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); box-shadow: var(--shadow-card); }
   .ticket hr { border: none; border-top: 1px dashed var(--line); margin: 12px 0; }
+  .t-row { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 2px 10px; }
+
+  /* ---------- Impresión del ticket ----------
+   * Antes se imprimía la pantalla completa (menú, botones, etc.) tal cual se ve en pantalla,
+   * con letra chica y gris — por eso salía chico y feo en la impresora térmica.
+   * Aquí se oculta todo menos el ticket y se agranda/oscurece el texto para que imprima nítido,
+   * ya sea en una impresora de tickets térmica (RawBT, etc.) o en una impresora normal. */
+  @media print {
+    @page { margin: 0; }
+    body { background: #fff !important; }
+    /* Se ocultan por nombre (en vez del truco de "visibility") porque algunas apps de impresión de
+     * tickets (como RawBT) generan la imagen a imprimir de una forma que no respeta bien ese truco;
+     * ocultando con display:none directamente sí funciona con cualquier app de impresión. */
+    .sidebar, .topbar, .sim-banner, .scrim, .venta-mobile-bar, #modal-root, .no-print { display: none !important; }
+    .shell, .main { display: block !important; height: auto !important; overflow: visible !important; }
+    .ticket {
+      width: 100%; max-width: 100%; margin: 0; padding: 6px 10px 16px;
+      border: none; border-radius: 0; box-shadow: none; background: #fff;
+      font-size: 15px; line-height: 1.5;
+    }
+    .ticket * { color: #000 !important; box-shadow: none !important; text-shadow: none !important; }
+    .ticket hr { border-top: 1.5px dashed #000; margin: 10px 0; }
+    .ticket img { filter: grayscale(1) contrast(1.4); }
+  }
 
   .tabs { display: inline-flex; background: var(--line-soft); padding: 4px; border-radius: var(--radius-sm); gap: 2px; }
   .tab-btn { border: none; background: none; padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; color: var(--muted); }
@@ -1698,22 +1722,22 @@ function renderTicket(venta) {
         ${venta.mayoreo ? `<p style="text-align:center;font-weight:700;color:var(--emerald-dark);margin-bottom:6px;">⚡ MAYOREO ACTIVO</p>` : ''}
         ${venta.items.map((it) => `
           <p style="font-weight:700;">${escapeHtml(it.nombre)}${it.esMayoreo ? ' (MAYOREO)' : ''}</p>
-          <div style="display:flex;justify-content:space-between;"><span>${it.qty} x ${formatoMoneda(it.unitPrice)}</span><span>${formatoMoneda(it.lineTotal)}</span></div>
+          <div class="t-row"><span>${it.qty} x ${formatoMoneda(it.unitPrice)}</span><span>${formatoMoneda(it.lineTotal)}</span></div>
         `).join('')}
         <hr>
-        ${venta.ahorro > 0 ? `<div style="display:flex;justify-content:space-between;color:var(--emerald-dark);font-weight:700;"><span>Ahorro mayoreo</span><span>-${formatoMoneda(venta.ahorro)}</span></div>` : ''}
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+        ${venta.ahorro > 0 ? `<div class="t-row" style="color:var(--emerald-dark);font-weight:700;"><span>Ahorro mayoreo</span><span>-${formatoMoneda(venta.ahorro)}</span></div>` : ''}
+        <div class="t-row" style="align-items:center;margin-top:4px;">
           <span style="font-weight:800;">TOTAL</span><span style="font-size:19px;font-weight:800;color:var(--navy);">${formatoMoneda(venta.total)}</span>
         </div>
         ${venta.payMethod === 'efectivo' ? `
           <div style="margin-top:6px;">
-            <div style="display:flex;justify-content:space-between;"><span>Recibido</span><span>${formatoMoneda(venta.recibido || 0)}</span></div>
-            <div style="display:flex;justify-content:space-between;font-weight:700;"><span>Cambio</span><span>${formatoMoneda(venta.cambio || 0)}</span></div>
+            <div class="t-row"><span>Recibido</span><span>${formatoMoneda(venta.recibido || 0)}</span></div>
+            <div class="t-row" style="font-weight:700;"><span>Cambio</span><span>${formatoMoneda(venta.cambio || 0)}</span></div>
           </div>` : ''}
         <hr>
         <p style="text-align:center;color:var(--muted);">¡Gracias por su compra!</p>
       </div>
-      <div style="display:flex;gap:10px;margin-top:18px;">
+      <div class="no-print" style="display:flex;gap:10px;margin-top:18px;">
         <button class="btn btn-ghost" onclick="window.print()">Imprimir ticket</button>
         <button class="btn btn-primary" data-action="nuevaVenta">Nueva venta</button>
       </div>
@@ -2169,14 +2193,25 @@ function h_importarCatalogo(file) {
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
       const tiposValidos = ['detergente', 'suavizante', 'cloro', 'otros'];
+      const filasValidas = rows.filter((r) => String(r.nombre || '').trim());
+
+      // Importante: "productos" depende de "familias" en la base de datos compartida (cada producto
+      // debe apuntar a una familia que ya exista). Por eso aquí primero se detectan y se suben las
+      // familias nuevas que traiga el Excel, y SOLO DESPUÉS se suben los productos — si el orden
+      // fuera al revés, Supabase rechazaría los productos porque todavía no conocería esa familia.
       const familiasNuevas = [];
+      filasValidas.forEach((r) => {
+        const familiaRaw = String(r.familia || 'Otros').trim();
+        if (familiaRaw && !DB.familias.includes(familiaRaw) && !familiasNuevas.includes(familiaRaw)) familiasNuevas.push(familiaRaw);
+      });
+      if (familiasNuevas.length) db('familias', (list) => [...list, ...familiasNuevas]);
+
       let n = 0;
       db('productos', (list) => {
         const copia = [...list];
-        rows.filter((r) => String(r.nombre || '').trim()).forEach((r) => {
+        filasValidas.forEach((r) => {
           const tipoRaw = String(r.tipo || 'otros').toLowerCase().trim();
           const familiaRaw = String(r.familia || 'Otros').trim();
-          if (familiaRaw && !DB.familias.includes(familiaRaw) && !familiasNuevas.includes(familiaRaw)) familiasNuevas.push(familiaRaw);
           const nuevo = {
             id: genId('prod'), nombre: String(r.nombre).trim(),
             precioMenudeo: Number(r.precioMenudeo) || 0, precioMayoreo: Number(r.precioMayoreo) || 0, costo: Number(r.costo) || 0,
@@ -2191,7 +2226,6 @@ function h_importarCatalogo(file) {
         });
         return copia;
       });
-      if (familiasNuevas.length) db('familias', (list) => [...list, ...familiasNuevas]);
       UI.productos.mensaje = 'Se importaron ' + n + ' productos correctamente.';
     } catch (e) { UI.productos.mensaje = 'No se pudo leer el archivo. Verifica el formato.'; }
     render();
