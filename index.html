@@ -409,6 +409,7 @@ const DB = {
   clientes: seedIfMissing('clientes', []),
   gastos: seedIfMissing('gastos', []),
   trabajadores: seedIfMissing('trabajadores', []),
+  retiros: seedIfMissing('retiros', []),
   usuarios: seedIfMissing('usuarios', USUARIOS_INICIALES),
   familias: seedIfMissing('familias', FAMILIAS_INICIALES),
 };
@@ -428,7 +429,7 @@ const UI = {
   syncErroresOpen: false,
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false, catalogoAbierto: false },
-  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false } },
+  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false, showSacar: false, carritoSacar: [], motivoSacar: '', historialRetirosOpen: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null, mensaje: '', nomina: { open: false, sucursalId: null, mes: '' } },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
@@ -534,6 +535,17 @@ const TABLAS_SUPABASE = {
     tabla: 'trabajadores',
     aFila: (t) => ({ id: t.id, sucursal_id: t.sucursalId, nombre: t.nombre, pago_por_dia: t.pagoPorDia }),
     deFila: (f) => ({ id: f.id, sucursalId: f.sucursal_id, nombre: f.nombre, pagoPorDia: Number(f.pago_por_dia) || 0 }),
+  },
+  retiros: {
+    tabla: 'retiros',
+    aFila: (r) => ({
+      id: r.id, fecha: r.fecha, sucursal_id: r.sucursalId, sucursal_nombre: r.sucursalNombre,
+      usuario: r.usuario || null, items: r.items, motivo: r.motivo,
+    }),
+    deFila: (f) => ({
+      id: f.id, fecha: f.fecha, sucursalId: f.sucursal_id, sucursalNombre: f.sucursal_nombre,
+      usuario: f.usuario, items: f.items, motivo: f.motivo,
+    }),
   },
   ventas: {
     tabla: 'ventas',
@@ -1763,6 +1775,8 @@ function renderModalRoot() {
   if (UI.productos.formOpen) return renderProductoFormModal();
   if (UI.productos.familiasModalOpen) return renderFamiliasModal();
   if (UI.productos.inv.showAgregar) return renderAgregarMaterialModal();
+  if (UI.productos.inv.showSacar) return renderSacarMaterialModal();
+  if (UI.productos.inv.historialRetirosOpen) return renderHistorialRetirosModal();
   if (UI.clientes.formOpen) return renderClienteFormModal();
   if (UI.gastos.formOpen) return renderGastoFormModal();
   if (UI.gastos.nomina.open) return renderNominaModal();
@@ -2253,6 +2267,8 @@ function renderInventarioTab() {
         <button class="btn btn-ghost" data-action="exportarInventario">⬇️ Descargar inventario en Excel</button>
         <button class="btn btn-ghost" data-action="abrirConteo">📋 Conteo físico</button>
         <button class="btn btn-accent" data-action="abrirAgregarMaterial">+ Agregar material individual</button>
+        <button class="btn btn-ghost" style="border-color:var(--red);color:var(--red);" data-action="abrirSacarMaterial">➖ Sacar material</button>
+        <button class="btn btn-ghost" data-action="abrirHistorialRetiros">🕑 Historial de retiros</button>
       </div>
       <div class="table-wrap"><table class="dtable">
         <thead><tr><th>Producto</th><th>Stock actual en ${escapeHtml(suc.nombre)}</th></tr></thead>
@@ -2568,6 +2584,280 @@ function h_guardarTodoMaterial() {
   UI.productos.inv.carrito = [];
   render();
 }
+
+/* ---------------------------------------------------------------------
+ * SACAR MATERIAL (retiro sin venta)
+ * Permite a la administradora o al dueño quitar producto del inventario
+ * de la sucursal que tengan seleccionada SIN que cuente como una venta.
+ * Es obligatorio dejar un motivo (para qué se usó / por qué se sacó),
+ * y cada retiro queda guardado en DB.retiros para que el Dueño lo pueda
+ * revisar después (ver renderHistorialRetirosModal).
+ * ------------------------------------------------------------------- */
+function h_abrirSacarMaterial() {
+  UI.productos.inv.showSacar = true;
+  UI.productos.inv.carritoSacar = [];
+  UI.productos.inv.motivoSacar = '';
+  UI.productos.inv.busquedaProducto = '';
+  UI.productos.inv.productoSeleccionado = null;
+  UI.productos.inv.dropdownVisible = false;
+  refreshModalRoot();
+}
+function h_cerrarSacarMaterial() {
+  UI.productos.inv.showSacar = false;
+  UI.productos.inv.carritoSacar = [];
+  UI.productos.inv.motivoSacar = '';
+  refreshModalRoot();
+}
+
+function renderSacarMaterialModal() {
+  const suc = DB.sucursales.find((s) => s.id === UI.productos.inv.sucursalId);
+  const carrito = UI.productos.inv.carritoSacar;
+  const motivo = UI.productos.inv.motivoSacar;
+  const puedeGuardar = carrito.length > 0 && motivo.trim().length > 0;
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>➖ Sacar material</h3>
+      <p style="color:var(--muted);font-size:12px;margin-top:2px;">Sucursal: ${escapeHtml(suc ? suc.nombre : '')} · Esto NO se registra como una venta.</p>
+
+      <div style="display:flex;gap:8px;align-items:flex-end;margin-top:16px;">
+        <label class="field" style="flex:1;margin:0;position:relative;"><span class="field-label">Producto</span>
+          <input id="sm-busqueda" class="input" style="margin-top:4px;" autocomplete="off" placeholder="Escribe para buscar… (ej. cloro)"
+            value="${escapeHtml(UI.productos.inv.busquedaProducto)}"
+            oninput="h_smBusqueda(this.value)"
+            onfocus="h_smBusquedaFocus()"
+            onblur="h_smBusquedaBlur()"
+            onkeydown="h_smBusquedaKey(event)">
+          <div id="sm-dropdown">${renderSmDropdown()}</div>
+        </label>
+        <label class="field" style="width:110px;margin:0;"><span class="field-label">Cantidad</span>
+          <input id="sm-cantidad" type="number" min="0" step="0.5" class="input" style="margin-top:4px;" value="" placeholder="0">
+        </label>
+      </div>
+      <button class="btn btn-primary" style="width:100%;margin-top:10px;" data-action="sacarMaterialALista">+ Añadir a la lista</button>
+
+      <p class="field-label" style="margin-top:18px;margin-bottom:8px;">Productos por sacar${carrito.length ? ' (' + carrito.length + ')' : ''}</p>
+      <div id="sm-lista" class="cart-scroll" style="max-height:180px;border:1px solid var(--line);border-radius:12px;padding:8px;">
+        ${renderSacarMaterialLista()}
+      </div>
+
+      <label class="field" style="margin-top:16px;">
+        <span class="field-label">Motivo (obligatorio) — ¿para qué se usó o por qué se sacó?</span>
+        <textarea id="sm-motivo" class="input" style="margin-top:4px;min-height:64px;resize:vertical;" placeholder="Ej. Se usó para limpiar la sucursal, se regaló, se dañó, etc."
+          oninput="h_smMotivo(this.value)">${escapeHtml(motivo)}</textarea>
+      </label>
+
+      <div style="display:flex;gap:10px;margin-top:18px;">
+        <button class="btn btn-ghost" style="flex:1;" data-action="cerrarSacarMaterial">Cancelar</button>
+        <button class="btn btn-accent" style="flex:1;" data-action="guardarSacarMaterial" ${puedeGuardar ? '' : 'disabled'}>Confirmar salida${carrito.length ? ' (' + carrito.length + ')' : ''}</button>
+      </div>
+    </div>
+  `, '460px');
+}
+
+function renderSmDropdown() {
+  if (!UI.productos.inv.dropdownVisible) return '';
+  const q = UI.productos.inv.busquedaProducto.trim();
+  if (!q) return '';
+  const suc = DB.sucursales.find((s) => s.id === UI.productos.inv.sucursalId);
+  const list = productosCoincidentes(q).slice(0, 8);
+  if (!list.length) return '';
+  return `<div class="search-dropdown">
+    ${list.map((p) => {
+      const stock = suc ? getStock(suc.id, p.id) : 0;
+      return `<div class="search-dropdown-item" onmousedown="event.preventDefault(); h_smSeleccionarProducto('${p.id}')">
+        <div style="display:flex;align-items:center;gap:10px;min-width:0;">
+          ${p.foto ? `<img src="${p.foto}" style="width:28px;height:28px;border-radius:8px;object-fit:cover;flex-shrink:0;" alt="">` : `<span style="font-size:17px;flex-shrink:0;">${TIPO_ICON[p.tipo]}</span>`}
+          <div style="min-width:0;">
+            <p style="font-weight:700;color:var(--navy);font-size:13px;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.nombre)}</p>
+            <p style="font-size:11px;color:var(--muted);margin:0;">${escapeHtml(familiaDe(p))}</p>
+          </div>
+        </div>
+        <span class="badge badge-gray" style="flex-shrink:0;">${stock} ${p.piezas ? 'pzas' : 'L'} en existencia</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function h_smBusqueda(v) {
+  UI.productos.inv.busquedaProducto = v;
+  UI.productos.inv.productoSeleccionado = null;
+  UI.productos.inv.dropdownVisible = true;
+  const dd = document.getElementById('sm-dropdown');
+  if (dd) dd.innerHTML = renderSmDropdown();
+}
+function h_smBusquedaFocus() {
+  UI.productos.inv.dropdownVisible = true;
+  const dd = document.getElementById('sm-dropdown');
+  if (dd) dd.innerHTML = renderSmDropdown();
+}
+function h_smBusquedaBlur() {
+  setTimeout(() => {
+    UI.productos.inv.dropdownVisible = false;
+    const dd = document.getElementById('sm-dropdown');
+    if (dd) dd.innerHTML = renderSmDropdown();
+  }, 180);
+}
+function h_smBusquedaKey(e) {
+  if (e.key === 'Escape') { e.target.blur(); return; }
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const match = productosCoincidentes(UI.productos.inv.busquedaProducto)[0];
+  if (match) h_smSeleccionarProducto(match.id);
+}
+function h_smSeleccionarProducto(id) {
+  const p = DB.productos.find((x) => x.id === id);
+  if (!p) return;
+  UI.productos.inv.productoSeleccionado = id;
+  UI.productos.inv.busquedaProducto = p.nombre;
+  UI.productos.inv.dropdownVisible = false;
+  const input = document.getElementById('sm-busqueda');
+  if (input) input.value = p.nombre;
+  const dd = document.getElementById('sm-dropdown');
+  if (dd) dd.innerHTML = '';
+  const cantidad = document.getElementById('sm-cantidad');
+  if (cantidad) { cantidad.focus(); cantidad.select(); }
+}
+function h_smMotivo(v) {
+  UI.productos.inv.motivoSacar = v;
+  const btn = document.querySelector('[data-action="guardarSacarMaterial"]');
+  if (btn) btn.disabled = !(UI.productos.inv.carritoSacar.length > 0 && v.trim().length > 0);
+}
+
+function renderSacarMaterialLista() {
+  const carrito = UI.productos.inv.carritoSacar;
+  if (!carrito.length) {
+    return `<p style="color:var(--muted);font-size:12.5px;text-align:center;padding:14px 4px;margin:0;">Aún no has añadido productos a la lista.</p>`;
+  }
+  return carrito.map((item) => {
+    const p = DB.productos.find((x) => x.id === item.productoId);
+    const nombre = p ? p.nombre : 'Producto eliminado';
+    const unidad = p && p.piezas ? 'pzas' : 'L';
+    return `
+      <div class="cart-line">
+        <span style="font-weight:700;color:var(--navy);font-size:13px;">${escapeHtml(nombre)} <span style="font-weight:600;color:var(--red);">— ${item.cantidad} ${unidad}</span></span>
+        <button style="border:none;background:none;color:#CBD5E1;font-size:18px;line-height:1;" data-action="quitarSacarLista" data-id="${item.productoId}">×</button>
+      </div>`;
+  }).join('');
+}
+
+function h_sacarMaterialALista() {
+  const productoId = UI.productos.inv.productoSeleccionado;
+  const cantidad = Number(document.getElementById('sm-cantidad').value);
+  if (!productoId) {
+    const input = document.getElementById('sm-busqueda');
+    if (input) { input.focus(); input.style.borderColor = 'var(--red)'; setTimeout(() => { input.style.borderColor = ''; }, 900); }
+    return;
+  }
+  if (!cantidad || cantidad <= 0) return;
+  const sucId = UI.productos.inv.sucursalId;
+  const carrito = UI.productos.inv.carritoSacar;
+  const existe = carrito.find((i) => i.productoId === productoId);
+  const yaEnLista = existe ? existe.cantidad : 0;
+  const disponible = getStock(sucId, productoId);
+  if (yaEnLista + cantidad > disponible) {
+    const cantidadInput = document.getElementById('sm-cantidad');
+    if (cantidadInput) {
+      cantidadInput.style.borderColor = 'var(--red)';
+      setTimeout(() => { cantidadInput.style.borderColor = ''; }, 1200);
+    }
+    UI.productos.inv.mensaje = 'No puedes sacar más de lo que hay: solo quedan ' + disponible + ' en esta sucursal.';
+    refreshModalRoot();
+    const cont = document.getElementById('productos-tab-body');
+    if (cont) cont.innerHTML = renderInventarioTab();
+    setTimeout(() => { UI.productos.inv.mensaje = ''; const c = document.getElementById('productos-tab-body'); if (c) c.innerHTML = renderInventarioTab(); }, 6000);
+    return;
+  }
+  if (existe) {
+    existe.cantidad = Number((existe.cantidad + cantidad).toFixed(2));
+  } else {
+    carrito.push({ productoId, cantidad: Number(cantidad.toFixed(2)) });
+  }
+  UI.productos.inv.busquedaProducto = '';
+  UI.productos.inv.productoSeleccionado = null;
+  refreshModalRoot();
+  const input = document.getElementById('sm-busqueda');
+  if (input) input.focus();
+}
+
+function h_quitarSacarLista(productoId) {
+  UI.productos.inv.carritoSacar = UI.productos.inv.carritoSacar.filter((i) => i.productoId !== productoId);
+  refreshModalRoot();
+}
+
+function h_guardarSacarMaterial() {
+  const carrito = UI.productos.inv.carritoSacar;
+  const motivo = UI.productos.inv.motivoSacar.trim();
+  if (!carrito.length || !motivo) return;
+  const sucId = UI.productos.inv.sucursalId;
+  const suc = DB.sucursales.find((s) => s.id === sucId);
+  const itemsGuardados = carrito.map((item) => {
+    const p = DB.productos.find((x) => x.id === item.productoId);
+    return { productoId: item.productoId, nombre: p ? p.nombre : 'Producto eliminado', cantidad: item.cantidad };
+  });
+  carrito.forEach((item) => ajustarStock(sucId, item.productoId, -item.cantidad));
+  db('retiros', (list) => [...list, {
+    id: genId('retiro'),
+    fecha: new Date().toISOString(),
+    sucursalId: sucId,
+    sucursalNombre: suc ? suc.nombre : '',
+    usuario: (UI.session && UI.session.nombre) || '',
+    items: itemsGuardados,
+    motivo,
+  }]);
+  UI.productos.inv.showSacar = false;
+  UI.productos.inv.carritoSacar = [];
+  UI.productos.inv.motivoSacar = '';
+  UI.productos.inv.mensaje = 'Se registró la salida de material de ' + (suc ? suc.nombre : '') + '.';
+  render();
+  setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 6000);
+}
+
+/* ---------------------------------------------------------------------
+ * HISTORIAL DE RETIROS — para que el Dueño revise qué se sacó, de dónde,
+ * cuándo, quién lo hizo y por qué. El Administrador ve solo la sucursal
+ * que tiene seleccionada; el Dueño ve todas las sucursales.
+ * ------------------------------------------------------------------- */
+function h_abrirHistorialRetiros() {
+  UI.productos.inv.historialRetirosOpen = true;
+  refreshModalRoot();
+}
+function h_cerrarHistorialRetiros() {
+  UI.productos.inv.historialRetirosOpen = false;
+  refreshModalRoot();
+}
+function renderHistorialRetirosModal() {
+  const esOwner = efectivoRol() === 'OWNER';
+  const sucId = UI.productos.inv.sucursalId;
+  const lista = DB.retiros
+    .filter((r) => esOwner || r.sucursalId === sucId)
+    .slice()
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>🕑 Historial de retiros</h3>
+      <p style="color:var(--muted);font-size:12px;margin-top:2px;">${esOwner ? 'Todas las sucursales' : escapeHtml((DB.sucursales.find((s) => s.id === sucId) || {}).nombre || '')} · material sacado sin venta</p>
+      <div class="cart-scroll" style="max-height:420px;overflow:auto;margin-top:14px;">
+        ${lista.length ? lista.map((r) => `
+          <div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+              <span style="font-weight:700;color:var(--navy);font-size:12.5px;">${formatoFecha(r.fecha)} ${formatoHora(r.fecha)}</span>
+              ${esOwner ? `<span class="badge badge-gray">${escapeHtml(r.sucursalNombre || '')}</span>` : ''}
+            </div>
+            <p style="margin:6px 0 4px;font-size:12.5px;">
+              ${r.items.map((it) => `<span style="font-weight:600;">${escapeHtml(it.nombre)}</span> (${it.cantidad})`).join(', ')}
+            </p>
+            <p style="margin:0;font-size:12px;color:var(--muted);">Motivo: ${escapeHtml(r.motivo)}</p>
+            ${r.usuario ? `<p style="margin:2px 0 0;font-size:11px;color:var(--muted);">Sacado por: ${escapeHtml(r.usuario)}</p>` : ''}
+          </div>
+        `).join('') : `<p style="color:var(--muted);font-size:12.5px;text-align:center;padding:20px 4px;">Todavía no se ha registrado ninguna salida de material.</p>`}
+      </div>
+      <div style="display:flex;margin-top:16px;">
+        <button class="btn btn-ghost" style="flex:1;" data-action="cerrarHistorialRetiros">Cerrar</button>
+      </div>
+    </div>
+  `, '480px');
+}
+
 function h_exportarInventario() {
   const suc = DB.sucursales.find((s) => s.id === UI.productos.inv.sucursalId);
   if (!suc) return;
