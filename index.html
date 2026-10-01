@@ -1602,6 +1602,11 @@ function h_agregarCarrito() {
   if (existente) existente.qty += qty;
   else UI.venta.carrito.push({ productoId, qty });
   UI.venta.modalProducto = null;
+  // Limpia la búsqueda al agregar: si no se hace esto, el cuadro de buscar se queda con el texto
+  // del producto anterior y, si el catálogo completo está abierto, se queda filtrado a ese mismo
+  // producto — dando la sensación de que la pantalla "no se actualizó" al querer vender el siguiente.
+  UI.venta.busqueda = '';
+  UI.venta.dropdownVisible = false;
   render();
 }
 function h_quitarDelCarrito(id) {
@@ -1665,19 +1670,43 @@ function h_filtroClienteVenta(v) {
   if (cont) cont.innerHTML = renderClienteModalList(v);
 }
 
-function h_pagoMetodo(m) { UI.venta.pagoMetodo = m; syncPagoModal(); }
-function h_pagoBillete(v) { UI.venta.pagoRecibido = (UI.venta.pagoRecibido || 0) + Number(v); syncPagoModal(true); }
-function h_pagoExacto() { UI.venta.pagoRecibido = ventaComputo().total; syncPagoModal(true); }
-function h_pagoLimpiar() { UI.venta.pagoRecibido = 0; syncPagoModal(true); }
-function h_pagoRecibidoInput(v) { UI.venta.pagoRecibido = Number(v) || 0; syncPagoModal(false); }
+function h_pagoMetodo(m) { UI.venta.pagoMetodo = m; refreshModalRoot(); }
+function h_pagoBillete(v) { UI.venta.pagoRecibido = (UI.venta.pagoRecibido || 0) + Number(v); actualizarPagoInputYDerivados(); }
+function h_pagoExacto() { UI.venta.pagoRecibido = ventaComputo().total; actualizarPagoInputYDerivados(); }
+function h_pagoLimpiar() { UI.venta.pagoRecibido = 0; actualizarPagoInputYDerivados(); }
+/** OJO: mientras se está escribiendo el monto recibido, NUNCA se debe volver a dibujar el
+ *  <input> (ni todo el modal) — eso destruye y recrea el cuadro de texto en cada tecla, y al
+ *  recuperar el foco el cursor se va al principio en vez de quedarse al final, haciendo que los
+ *  números se sientan "al revés" al escribir rápido. Por eso aquí solo se actualizan, a mano, el
+ *  renglón de cambio/falta y el botón de confirmar — el <input> se deja intacto tal cual el
+ *  usuario lo está editando. */
+function h_pagoRecibidoInput(v) { UI.venta.pagoRecibido = Number(v) || 0; actualizarPagoDerivados(); }
 
-function syncPagoModal(updateInput) {
-  const root = document.getElementById('modal-root');
-  if (root) root.innerHTML = renderModalRoot();
-  if (!updateInput) {
-    const input = document.getElementById('pago-recibido-input');
-    if (input) setTimeout(() => input.focus(), 0);
+/** Para cambios que NO vienen de teclear (botones de billete, "Pago exacto", "Limpiar"): aquí sí
+ *  es seguro fijar el value del input de forma directa (sin recrear el elemento ni quitarle el
+ *  foco a nadie), y luego actualizar lo derivado. */
+function actualizarPagoInputYDerivados() {
+  const input = document.getElementById('pago-recibido-input');
+  if (input) input.value = UI.venta.pagoRecibido || 0;
+  actualizarPagoDerivados();
+}
+/** Recalcula cambio/falta y actualiza solo esas piezas del modal de cobro, sin tocar el <input>. */
+function actualizarPagoDerivados() {
+  const total = ventaComputo().total;
+  const recibido = UI.venta.pagoRecibido || 0;
+  const cambio = Number((recibido - total).toFixed(2));
+  const falta = (UI.venta.pagoMetodo || 'efectivo') === 'efectivo' && recibido < total;
+  const fila = document.getElementById('pago-cambio-fila');
+  if (fila) {
+    fila.innerHTML = `
+      <span style="font-size:13px;color:var(--muted);font-weight:600;">${cambio >= 0 ? 'Cambio' : 'Falta'}</span>
+      <span style="font-size:17px;font-weight:800;color:${cambio >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${formatoMoneda(Math.abs(cambio))}</span>
+    `;
   }
+  const msg = document.getElementById('pago-falta-msg');
+  if (msg) msg.style.display = falta ? '' : 'none';
+  const btn = document.getElementById('btn-confirmar-cobro');
+  if (btn) btn.disabled = falta;
 }
 
 function h_confirmarCobro() {
@@ -1881,16 +1910,16 @@ function renderPagoModal() {
         <div style="background:var(--ground);border-radius:12px;padding:11px;margin-top:12px;">
           <input id="pago-recibido-input" class="tabular" style="width:100%;background:transparent;border:none;text-align:right;font-size:18px;font-weight:800;color:var(--navy);" type="number" value="${recibido}" oninput="h_pagoRecibidoInput(this.value)">
           <p style="text-align:right;font-size:10.5px;color:var(--muted);margin:-2px 0 0;">Recibido</p>
-          <div style="display:flex;justify-content:space-between;border-top:1px solid var(--line);margin-top:8px;padding-top:8px;">
+          <div id="pago-cambio-fila" style="display:flex;justify-content:space-between;border-top:1px solid var(--line);margin-top:8px;padding-top:8px;">
             <span style="font-size:13px;color:var(--muted);font-weight:600;">${cambio >= 0 ? 'Cambio' : 'Falta'}</span>
             <span style="font-size:17px;font-weight:800;color:${cambio >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${formatoMoneda(Math.abs(cambio))}</span>
           </div>
         </div>
-        ${falta ? `<p style="color:var(--red);font-size:12px;font-weight:600;margin-top:8px;">El monto recibido es menor al total. No se puede cobrar.</p>` : ''}
+        <p id="pago-falta-msg" style="color:var(--red);font-size:12px;font-weight:600;margin-top:8px;${falta ? '' : 'display:none;'}">El monto recibido es menor al total. No se puede cobrar.</p>
       ` : ''}
       <div style="display:flex;gap:10px;margin-top:18px;">
         <button class="btn btn-ghost" style="flex:1;" data-action="cerrarModal">Cancelar</button>
-        <button class="btn btn-accent" style="flex:1;" ${falta ? 'disabled' : ''} data-action="confirmarCobro">Confirmar cobro</button>
+        <button id="btn-confirmar-cobro" class="btn btn-accent" style="flex:1;" ${falta ? 'disabled' : ''} data-action="confirmarCobro">Confirmar cobro</button>
       </div>
     </div>
   `);
