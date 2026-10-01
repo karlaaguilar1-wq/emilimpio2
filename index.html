@@ -1793,7 +1793,17 @@ function renderTicket(venta) {
  * ------------------------------------------------------------------- */
 function refreshModalRoot() {
   const root = document.getElementById('modal-root');
-  if (root) root.innerHTML = renderModalRoot();
+  if (!root) return;
+  // Si había un campo de texto enfocado FUERA del modal (por ejemplo el buscador de la pantalla
+  // de Venta) justo cuando se abre un modal nuevo (como "¿Cuántos litros?"), el teclado del
+  // celular se queda abierto encima de todo y tapa los botones del modal — exactamente lo que
+  // reportó el usuario con la foto del teclado cubriendo "Agregar al carrito". Por eso aquí se le
+  // quita el foco a ese campo antes de dibujar el modal. Nunca se le quita el foco a algo que ya
+  // esté DENTRO del modal (root.contains), para no interrumpir si se está escribiendo ahí mismo
+  // (por ejemplo mientras se van añadiendo varios productos seguidos en "Agregar material").
+  const activo = document.activeElement;
+  if (activo && typeof activo.blur === 'function' && !root.contains(activo)) activo.blur();
+  root.innerHTML = renderModalRoot();
 }
 function modalWrap(innerHtml, maxWidth) {
   return `<div class="modal-scrim" onclick="if (event.target === event.currentTarget) h_cerrarModal()"><div class="modal-box" style="max-width:${maxWidth || '420px'};">${innerHtml}</div></div>`;
