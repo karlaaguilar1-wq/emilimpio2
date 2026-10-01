@@ -391,6 +391,8 @@ const ROLE_LABELS = { OWNER: 'Dueño', ADMIN: 'Administrador', SELLER: 'Vendedor
 
 const TIPO_LABEL = { detergente: 'Detergente', suavizante: 'Suavizante', cloro: 'Cloro', otros: 'Otros' };
 const TIPO_ICON = { detergente: '💧', suavizante: '🌸', cloro: '🧴', otros: '📦' };
+/** Paleta fija para las barras de "ventas por familia" en Reportes (orden fijo, nunca se reasigna por ranking). */
+const FAMILIA_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
 
 /* ---------------------------------------------------------------------
  * ESTADO GLOBAL
@@ -434,7 +436,7 @@ const UI = {
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null, mensaje: '', nomina: { open: false, sucursalId: null, mes: '' } },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
   tickets: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', busquedaFolio: '', detalleId: null, editando: null },
-  reportes: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '' },
+  reportes: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', detalleProductosAbierto: false },
   utilidades: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '' },
 };
 
@@ -3354,6 +3356,10 @@ function renderReporteProductos() {
   `;
 }
 
+function h_toggleDetalleReportes() {
+  UI.reportes.detalleProductosAbierto = !UI.reportes.detalleProductosAbierto;
+  render();
+}
 function renderReportesBody() {
   const f = UI.reportes;
   const sucNombre = f.filtroSucursal === 'todas' ? 'todas las sucursales' : (DB.sucursales.find((s) => s.id === f.filtroSucursal) || {}).nombre || '—';
@@ -3384,7 +3390,9 @@ function renderReportesBody() {
   const masVendidos = [...filasConVentas].sort((a, b) => b.litros - a.litros).slice(0, 5);
   const menosVendidos = [...filasConVentas].sort((a, b) => a.litros - b.litros).slice(0, 5);
 
-  // Comparativa de productos, agrupada por Familia: cuánto vendió cada familia en $ y litros
+  // Comparativa de productos, agrupada por Familia: cuánto vendió cada familia en $ y litros,
+  // y qué porcentaje del total representa (lo que se ve en la barra de "Ventas por familia").
+  // Si hay más de 8 familias, las que sobran se agrupan en "Otras" para que la lista no crezca sin control.
   const porFamilia = {};
   ventasFiltradas.forEach((v) => {
     v.items.forEach((it) => {
@@ -3395,7 +3403,18 @@ function renderReportesBody() {
       porFamilia[familia].ingresos += it.lineTotal;
     });
   });
-  const filasFamilia = Object.values(porFamilia).sort((a, b) => b.ingresos - a.ingresos);
+  const familiasOrdenadas = Object.values(porFamilia).sort((a, b) => b.ingresos - a.ingresos);
+  const ingresosTotalesFamilias = familiasOrdenadas.reduce((s, fam) => s + fam.ingresos, 0);
+  let filasFamilia = familiasOrdenadas.slice(0, 8);
+  const resto = familiasOrdenadas.slice(8);
+  if (resto.length) {
+    filasFamilia = [...filasFamilia, {
+      familia: 'Otras (' + resto.length + ')',
+      litros: resto.reduce((s, fam) => s + fam.litros, 0),
+      ingresos: resto.reduce((s, fam) => s + fam.ingresos, 0),
+      esOtras: true,
+    }];
+  }
 
   // Comparativa entre sucursales: totales de $ y litros por sucursal, en el mismo periodo, sin importar el filtro de sucursal elegido arriba
   const ventasDelPeriodo = DB.ventas.filter((v) => ventaActiva(v) && pasaFiltroFechaModo(v.fecha, f));
@@ -3414,27 +3433,24 @@ function renderReportesBody() {
       <div class="kpi"><div class="kpi-label">Producto top</div><div class="kpi-value" style="font-size:17px;">${top && top.litros > 0 ? escapeHtml(top.nombre) : '—'}</div>${top && top.litros > 0 ? `<div class="kpi-sub">${top.litros.toFixed(1)} vendidos</div>` : ''}</div>
       <div class="kpi"><div class="kpi-label">Stock bajo</div><div class="kpi-value" style="color:var(--red);">${stockBajoCount}</div><div class="kpi-sub">productos con menos de 10 en ${escapeHtml(sucNombre)}</div></div>
     </div>
-    <div class="table-wrap"><table class="dtable">
-      <thead><tr><th>Producto</th><th>Vendido (periodo filtrado)</th><th>Nº de ventas</th><th>Stock (${escapeHtml(sucNombre)})</th></tr></thead>
-      <tbody>
-        ${filas.map((fila) => {
-          const producto = DB.productos.find((p) => p.id === fila.id);
-          return `
-          <tr>
-            <td style="font-weight:700;color:var(--navy);">${escapeHtml(fila.nombre)}</td>
-            <td>${fila.litros.toFixed(1)} ${producto && producto.piezas ? 'pzas' : 'L'}</td>
-            <td>${fila.ventasCount}</td>
-            <td>${producto ? (() => {
-              const stockTotal = stockDe(producto.id);
-              return `<span class="badge ${stockTotal < 10 ? 'badge-red' : 'badge-emerald'}">${stockTotal} ${producto.piezas ? 'pzas' : 'L'}</span>`;
-            })() : '<span class="badge badge-gray">producto eliminado</span>'}</td>
-          </tr>`;
-        }).join('') || `<tr><td colspan="4" class="empty-row">No hay ventas con estos filtros.</td></tr>`}
-      </tbody>
-    </table></div>
+    <div class="card" style="padding:18px;margin-bottom:20px;">
+      <h3 style="margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);">📂 Ventas por familia</h3>
+      <p style="margin:0 0 16px;font-size:12px;color:var(--muted);">Qué tanto representa cada familia de producto del total vendido en ${escapeHtml(sucNombre)}</p>
+      ${filasFamilia.length ? filasFamilia.map((fam, idx) => {
+        const pct = ingresosTotalesFamilias > 0 ? (fam.ingresos / ingresosTotalesFamilias) * 100 : 0;
+        const color = fam.esOtras ? '#C3C2B7' : FAMILIA_COLORS[idx % FAMILIA_COLORS.length];
+        return `
+        <div style="display:flex;align-items:center;gap:12px;${idx === filasFamilia.length - 1 ? '' : 'margin-bottom:12px;'}">
+          <span style="width:112px;flex-shrink:0;font-size:12.5px;font-weight:700;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml(fam.familia)}">${escapeHtml(fam.familia)}</span>
+          <div style="flex:1;background:var(--line-soft);border-radius:4px;height:14px;min-width:40px;">
+            <div style="width:${Math.max(pct, fam.ingresos > 0 ? 1.5 : 0)}%;background:${color};height:100%;border-radius:${pct >= 98 ? '4px' : '0 4px 4px 0'};"></div>
+          </div>
+          <span style="width:132px;flex-shrink:0;text-align:right;font-size:12.5px;white-space:nowrap;"><b style="color:var(--ink);">${pct.toFixed(1)}%</b> <span style="color:var(--muted);">· ${formatoMoneda(fam.ingresos)}</span></span>
+        </div>`;
+      }).join('') : `<p style="color:var(--muted);font-size:12.5px;text-align:center;padding:10px 4px;margin:0;">Sin ventas en este periodo.</p>`}
+    </div>
 
-    <p class="field-label" style="margin:26px 0 10px;">Comparativa de productos (mismo periodo filtrado)</p>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:26px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
       <div class="card" style="padding:18px;">
         <h3 style="margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--emerald-dark);">🔥 Top 5 más vendidos</h3>
         <div class="table-wrap"><table class="dtable" style="font-size:12px;">
@@ -3465,23 +3481,8 @@ function renderReportesBody() {
       </div>
     </div>
 
-    <div class="card" style="padding:18px;margin-bottom:26px;">
-      <h3 style="margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);">📂 Ventas por familia</h3>
-      <div class="table-wrap"><table class="dtable">
-        <thead><tr><th>Familia</th><th>Litros</th><th>Dinero</th></tr></thead>
-        <tbody>
-          ${filasFamilia.map((fam) => `
-            <tr>
-              <td style="font-weight:700;color:var(--navy);">${escapeHtml(fam.familia)}</td>
-              <td>${fam.litros.toFixed(1)}</td>
-              <td style="font-weight:800;color:var(--navy-light);">${formatoMoneda(fam.ingresos)}</td>
-            </tr>`).join('') || `<tr><td colspan="3" class="empty-row">Sin ventas en este periodo.</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>
-
     <p class="field-label" style="margin-bottom:10px;">Comparativa entre sucursales (mismo periodo filtrado, todas las sucursales)</p>
-    <div class="card" style="padding:18px;">
+    <div class="card" style="padding:18px;margin-bottom:20px;">
       ${sucursalGanadora ? `<p style="margin:0 0 12px;font-size:13px;color:var(--ink-soft);">🏆 La que más vendió: <b style="color:var(--navy);">${escapeHtml(sucursalGanadora.sucursal.nombre)}</b> con ${formatoMoneda(sucursalGanadora.monto)}</p>` : ''}
       <div class="table-wrap"><table class="dtable">
         <thead><tr><th>Sucursal</th><th>Ventas ($)</th><th>Litros vendidos</th></tr></thead>
@@ -3495,6 +3496,30 @@ function renderReportesBody() {
         </tbody>
       </table></div>
     </div>
+
+    <button class="btn-link" style="margin:2px 0 10px;padding:8px 2px;font-size:13px;" data-action="toggleDetalleReportes">
+      ${f.detalleProductosAbierto ? '▲ Ocultar detalle de todos los productos' : `▼ Ver detalle de todos los productos (${filas.length})`}
+    </button>
+    ${f.detalleProductosAbierto ? `
+      <div class="table-wrap"><table class="dtable">
+        <thead><tr><th>Producto</th><th>Vendido (periodo filtrado)</th><th>Nº de ventas</th><th>Stock (${escapeHtml(sucNombre)})</th></tr></thead>
+        <tbody>
+          ${filas.map((fila) => {
+            const producto = DB.productos.find((p) => p.id === fila.id);
+            return `
+            <tr>
+              <td style="font-weight:700;color:var(--navy);">${escapeHtml(fila.nombre)}</td>
+              <td>${fila.litros.toFixed(1)} ${producto && producto.piezas ? 'pzas' : 'L'}</td>
+              <td>${fila.ventasCount}</td>
+              <td>${producto ? (() => {
+                const stockTotal = stockDe(producto.id);
+                return `<span class="badge ${stockTotal < 10 ? 'badge-red' : 'badge-emerald'}">${stockTotal} ${producto.piezas ? 'pzas' : 'L'}</span>`;
+              })() : '<span class="badge badge-gray">producto eliminado</span>'}</td>
+            </tr>`;
+          }).join('') || `<tr><td colspan="4" class="empty-row">No hay ventas con estos filtros.</td></tr>`}
+        </tbody>
+      </table></div>
+    ` : ''}
   `;
 }
 
