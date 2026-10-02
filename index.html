@@ -412,6 +412,7 @@ const DB = {
   gastos: seedIfMissing('gastos', []),
   trabajadores: seedIfMissing('trabajadores', []),
   retiros: seedIfMissing('retiros', []),
+  ingresos: seedIfMissing('ingresos', []),
   usuarios: seedIfMissing('usuarios', USUARIOS_INICIALES),
   familias: seedIfMissing('familias', FAMILIAS_INICIALES),
 };
@@ -431,7 +432,7 @@ const UI = {
   syncErroresOpen: false,
   // estado efímero de vistas (búsquedas, carrito, filtros, tabs, modales)
   venta: { busqueda: '', dropdownVisible: false, carrito: [], clienteAsignado: null, modalProducto: null, showCliente: false, showPago: false, showCorte: false, ventaFinalizada: null, carritoMovilOpen: false, catalogoAbierto: false },
-  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false, showSacar: false, carritoSacar: [], motivoSacar: '', historialRetirosOpen: false } },
+  productos: { tab: 'productos', busqueda: '', filtroFamilia: 'todas', formOpen: false, editando: null, mensaje: '', familiasModalOpen: false, nuevaFamiliaTmp: '', inv: { sucursalId: null, showAgregar: false, mensaje: '', carrito: [], ultimoProductoId: null, busquedaProducto: '', productoSeleccionado: null, dropdownVisible: false, importModoOpen: false, importPendiente: null, conteoActivo: false, conteoValores: {}, conteoExcluidos: {}, conteoEsInicial: false, conteoComparativaTicket: null, showSacar: false, carritoSacar: [], motivoSacar: '', historialRetirosOpen: false, ingresoTicket: null, historialIngresosOpen: false } },
   clientes: { busqueda: '', formOpen: false, editando: null },
   gastos: { filtroSucursal: 'todas', filtroTipo: 'todos', filtroNaturaleza: 'todos', formOpen: false, editando: null, mensaje: '', nomina: { open: false, sucursalId: null, mes: '' } },
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
@@ -547,6 +548,17 @@ const TABLAS_SUPABASE = {
     deFila: (f) => ({
       id: f.id, fecha: f.fecha, sucursalId: f.sucursal_id, sucursalNombre: f.sucursal_nombre,
       usuario: f.usuario, items: f.items, motivo: f.motivo,
+    }),
+  },
+  ingresos: {
+    tabla: 'ingresos',
+    aFila: (r) => ({
+      id: r.id, fecha: r.fecha, sucursal_id: r.sucursalId, sucursal_nombre: r.sucursalNombre,
+      usuario: r.usuario || null, items: r.items,
+    }),
+    deFila: (f) => ({
+      id: f.id, fecha: f.fecha, sucursalId: f.sucursal_id, sucursalNombre: f.sucursal_nombre,
+      usuario: f.usuario, items: f.items,
     }),
   },
   ventas: {
@@ -1839,6 +1851,7 @@ function renderModalRoot() {
   if (UI.productos.inv.showAgregar) return renderAgregarMaterialModal();
   if (UI.productos.inv.showSacar) return renderSacarMaterialModal();
   if (UI.productos.inv.historialRetirosOpen) return renderHistorialRetirosModal();
+  if (UI.productos.inv.historialIngresosOpen) return renderHistorialIngresosModal();
   if (UI.clientes.formOpen) return renderClienteFormModal();
   if (UI.gastos.formOpen) return renderGastoFormModal();
   if (UI.gastos.nomina.open) return renderNominaModal();
@@ -2316,6 +2329,8 @@ function h_importarCatalogo(file) {
 /* ---- Inventario ---- */
 function renderInventarioTab() {
   if (!UI.productos.inv.sucursalId) UI.productos.inv.sucursalId = UI.sucursalActualId;
+  if (UI.productos.inv.ingresoTicket) return renderIngresoTicket(UI.productos.inv.ingresoTicket);
+  if (UI.productos.inv.conteoComparativaTicket) return renderConteoComparativaTicket(UI.productos.inv.conteoComparativaTicket);
   const sucId = UI.productos.inv.sucursalId;
   const suc = DB.sucursales.find((s) => s.id === sucId);
   return `
@@ -2334,6 +2349,7 @@ function renderInventarioTab() {
         <button class="btn btn-accent" data-action="abrirAgregarMaterial">+ Agregar material individual</button>
         <button class="btn btn-ghost" style="border-color:var(--red);color:var(--red);" data-action="abrirSacarMaterial">➖ Sacar material</button>
         <button class="btn btn-ghost" data-action="abrirHistorialRetiros">🕑 Historial de retiros</button>
+        <button class="btn btn-ghost" data-action="abrirHistorialIngresos">🕑 Historial de ingresos</button>
       </div>
       <div class="table-wrap"><table class="dtable">
         <thead><tr><th>Producto</th><th>Stock actual en ${escapeHtml(suc.nombre)}</th></tr></thead>
@@ -2450,30 +2466,109 @@ function h_aplicarConteo() {
   const sucId = inv.sucursalId;
   const productos = DB.productos.filter((p) => !inv.conteoExcluidos[p.id]);
   let aplicados = 0;
+  // Se arma la comparativa (esperado vs. contado vs. diferencia) ANTES de sobreescribir el stock,
+  // para poder mostrarla/descargarla/imprimirla justo después de aplicar el conteo.
+  const comparativa = [];
   productos.forEach((p) => {
     const valorTxt = inv.conteoValores[p.id];
     const tieneValor = valorTxt != null && String(valorTxt).trim() !== '';
     const valor = tieneValor ? Number(String(valorTxt).trim().replace(',', '.')) : NaN;
+    const esperado = getStock(sucId, p.id);
+    let contado = null;
     if (tieneValor && !isNaN(valor)) {
-      fijarStock(sucId, p.id, Math.max(0, valor));
+      contado = Math.max(0, valor);
+      fijarStock(sucId, p.id, contado);
       aplicados++;
     } else if (inv.conteoEsInicial) {
       // En un conteo de arranque, lo que se deja en blanco se asume en 0 (no se tenía nada de eso).
+      contado = 0;
       fijarStock(sucId, p.id, 0);
       aplicados++;
     }
+    comparativa.push({
+      nombre: p.nombre,
+      unidad: p.piezas ? 'pzas' : 'L',
+      esperado,
+      contado,
+      diferencia: contado != null ? Number((contado - esperado).toFixed(2)) : null,
+    });
   });
   const suc = DB.sucursales.find((s) => s.id === sucId);
   const nombreSuc = suc ? suc.nombre : '';
-  inv.mensaje = (inv.conteoEsInicial
+  const esInicial = inv.conteoEsInicial;
+  inv.mensaje = (esInicial
     ? 'Se guardó como el inventario inicial de ' + nombreSuc + ': '
     : 'Se aplicó el conteo físico de ' + nombreSuc + ': ') + aplicados + ' de ' + productos.length + ' productos actualizados.';
   inv.conteoActivo = false;
   inv.conteoValores = {};
   inv.conteoExcluidos = {};
   inv.conteoEsInicial = false;
+  inv.conteoComparativaTicket = {
+    fecha: new Date().toISOString(),
+    sucursalNombre: nombreSuc,
+    esInicial,
+    items: comparativa,
+  };
   render();
   setTimeout(() => { UI.productos.inv.mensaje = ''; renderPreservandoScroll(); }, 9000);
+}
+
+/** Comparativa del conteo físico recién aplicado (Esperado vs. Contado vs. Diferencia), en
+ *  formato de ticket angosto para poder imprimirla en la impresora de recibos, además de poder
+ *  descargarla en Excel. Se muestra automáticamente justo después de "Aplicar conteo". */
+function renderConteoComparativaTicket(comp) {
+  const conDiferencia = comp.items.filter((it) => it.diferencia != null && it.diferencia !== 0).length;
+  return `
+    <div style="padding:26px 16px;display:flex;flex-direction:column;align-items:center;">
+      <div class="ticket">
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;">
+          <div class="brand-mark" style="width:40px;height:40px;"><img src="${LOGO_URI}" alt="Emilimpio"></div>
+          <p style="font-weight:700;color:var(--navy);margin-top:8px;letter-spacing:.5px;">EMILIMPIO</p>
+          <p style="font-size:11px;color:var(--muted);">${escapeHtml(comp.sucursalNombre)}</p>
+          <p style="font-size:10px;color:var(--muted);">Hecho en México</p>
+        </div>
+        <hr>
+        <p style="text-align:center;font-weight:700;color:var(--navy);margin-bottom:6px;">${comp.esInicial ? 'INVENTARIO INICIAL' : 'COMPARATIVA DE CONTEO FÍSICO'}</p>
+        <p>Fecha: ${formatoFecha(comp.fecha)} ${formatoHora(comp.fecha)}</p>
+        <p>Sucursal: ${escapeHtml(comp.sucursalNombre)}</p>
+        <hr>
+        ${comp.items.map((it) => `
+          <div class="t-row"><span>${escapeHtml(it.nombre)}</span><span style="font-weight:700;">${it.contado == null ? '—' : it.contado + ' ' + it.unidad}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin:-4px 0 4px;">
+            <span>Esperado: ${it.esperado} ${it.unidad}</span>
+            <span style="font-weight:700;color:${it.diferencia == null ? 'var(--muted)' : it.diferencia === 0 ? 'var(--muted)' : it.diferencia > 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${it.diferencia == null ? 'sin contar' : it.diferencia === 0 ? 'sin diferencia' : (it.diferencia > 0 ? '+' : '') + it.diferencia}</span>
+          </div>
+        `).join('')}
+        <hr>
+        <div class="t-row" style="font-weight:800;"><span>Total de productos</span><span>${comp.items.length}</span></div>
+        <div class="t-row"><span>Con diferencia</span><span>${conDiferencia}</span></div>
+      </div>
+      <div class="no-print" style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap;justify-content:center;">
+        <button class="btn btn-ghost" data-action="descargarComparativaConteo">⬇️ Descargar Excel</button>
+        <button class="btn btn-ghost" onclick="window.print()">Imprimir ticket</button>
+        <button class="btn btn-primary" data-action="cerrarConteoComparativaTicket">Listo</button>
+      </div>
+    </div>
+  `;
+}
+function h_cerrarConteoComparativaTicket() {
+  UI.productos.inv.conteoComparativaTicket = null;
+  render();
+}
+function h_descargarComparativaConteo() {
+  const comp = UI.productos.inv.conteoComparativaTicket;
+  if (!comp) return;
+  const rows = comp.items.map((it) => ({
+    Producto: it.nombre,
+    Esperado: it.esperado,
+    Contado: it.contado == null ? '' : it.contado,
+    Diferencia: it.diferencia == null ? '' : it.diferencia,
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: ['Producto', 'Esperado', 'Contado', 'Diferencia'] });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Comparativa');
+  const nombreArchivo = 'comparativa_conteo_' + comp.sucursalNombre.replace(/\s+/g, '_').toLowerCase() + '_' + comp.fecha.slice(0, 10) + '.xlsx';
+  XLSX.writeFile(wb, nombreArchivo);
 }
 function h_abrirAgregarMaterial() {
   UI.productos.inv.showAgregar = true;
@@ -2644,10 +2739,111 @@ function h_quitarMaterialLista(productoId) {
 function h_guardarTodoMaterial() {
   const carrito = UI.productos.inv.carrito;
   if (!carrito.length) return;
-  carrito.forEach((item) => ajustarStock(UI.productos.inv.sucursalId, item.productoId, item.cantidad));
+  const sucId = UI.productos.inv.sucursalId;
+  const suc = DB.sucursales.find((s) => s.id === sucId);
+  const itemsGuardados = carrito.map((item) => {
+    const p = DB.productos.find((x) => x.id === item.productoId);
+    return { productoId: item.productoId, nombre: p ? p.nombre : 'Producto eliminado', cantidad: item.cantidad };
+  });
+  carrito.forEach((item) => ajustarStock(sucId, item.productoId, item.cantidad));
+  // Se deja un registro (como el de "Sacar material") y, además, se abre un ticket imprimible con
+  // lo que se agregó — para tener en papel el comprobante de lo que entró al inventario.
+  const ingreso = {
+    id: genId('ingreso'),
+    fecha: new Date().toISOString(),
+    sucursalId: sucId,
+    sucursalNombre: suc ? suc.nombre : '',
+    usuario: (UI.session && UI.session.nombre) || '',
+    items: itemsGuardados,
+  };
+  db('ingresos', (list) => [...list, ingreso]);
   UI.productos.inv.showAgregar = false;
   UI.productos.inv.carrito = [];
+  UI.productos.inv.ingresoTicket = ingreso;
   render();
+}
+
+/** Ticket imprimible de una entrada de material al inventario — mismo estilo que el ticket de
+ *  venta (misma clase .ticket y el mismo CSS de impresión ya probado), para que quede en papel lo
+ *  que se agregó. */
+function renderIngresoTicket(ingreso) {
+  const totalUnidades = ingreso.items.reduce((s, it) => s + it.cantidad, 0);
+  return `
+    <div style="padding:26px 16px;display:flex;flex-direction:column;align-items:center;">
+      <div class="ticket">
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;">
+          <div class="brand-mark" style="width:40px;height:40px;"><img src="${LOGO_URI}" alt="Emilimpio"></div>
+          <p style="font-weight:700;color:var(--navy);margin-top:8px;letter-spacing:.5px;">EMILIMPIO</p>
+          <p style="font-size:11px;color:var(--muted);">${escapeHtml(ingreso.sucursalNombre)}</p>
+          <p style="font-size:10px;color:var(--muted);">Hecho en México</p>
+        </div>
+        <hr>
+        <p style="text-align:center;font-weight:700;color:var(--navy);margin-bottom:6px;">ENTRADA DE INVENTARIO</p>
+        <p>Fecha: ${formatoFecha(ingreso.fecha)} ${formatoHora(ingreso.fecha)}</p>
+        <p>Sucursal: ${escapeHtml(ingreso.sucursalNombre)}</p>
+        <p>Registró: ${escapeHtml(ingreso.usuario || '—')}</p>
+        <p>Folio: ${ingreso.id}</p>
+        <hr>
+        ${ingreso.items.map((it) => `
+          <div class="t-row"><span>${escapeHtml(it.nombre)}</span><span style="font-weight:700;">+${it.cantidad}</span></div>
+        `).join('')}
+        <hr>
+        <div class="t-row" style="font-weight:800;"><span>Total de productos</span><span>${ingreso.items.length}</span></div>
+        <div class="t-row"><span>Total de unidades</span><span>${totalUnidades}</span></div>
+      </div>
+      <div class="no-print" style="display:flex;gap:10px;margin-top:18px;">
+        <button class="btn btn-ghost" onclick="window.print()">Imprimir ticket</button>
+        <button class="btn btn-primary" data-action="cerrarIngresoTicket">Listo</button>
+      </div>
+    </div>
+  `;
+}
+function h_cerrarIngresoTicket() {
+  UI.productos.inv.ingresoTicket = null;
+  render();
+}
+
+/** Historial de entradas de material — para revisar después qué se agregó, cuándo, de dónde y
+ *  quién lo hizo. Igual que el historial de retiros: el Administrador ve solo su sucursal actual,
+ *  el Dueño ve todas. */
+function h_abrirHistorialIngresos() {
+  UI.productos.inv.historialIngresosOpen = true;
+  refreshModalRoot();
+}
+function h_cerrarHistorialIngresos() {
+  UI.productos.inv.historialIngresosOpen = false;
+  refreshModalRoot();
+}
+function renderHistorialIngresosModal() {
+  const esOwner = efectivoRol() === 'OWNER';
+  const sucId = UI.productos.inv.sucursalId;
+  const lista = DB.ingresos
+    .filter((r) => esOwner || r.sucursalId === sucId)
+    .slice()
+    .sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  return modalWrap(`
+    <div class="modal-pad">
+      <h3>🕑 Historial de entradas de material</h3>
+      <p style="color:var(--muted);font-size:12px;margin-top:2px;">${esOwner ? 'Todas las sucursales' : escapeHtml((DB.sucursales.find((s) => s.id === sucId) || {}).nombre || '')} · material agregado sin ser venta</p>
+      <div class="cart-scroll" style="max-height:420px;overflow:auto;margin-top:14px;">
+        ${lista.length ? lista.map((r) => `
+          <div style="border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+              <span style="font-weight:700;color:var(--navy);font-size:12.5px;">${formatoFecha(r.fecha)} ${formatoHora(r.fecha)}</span>
+              ${esOwner ? `<span class="badge badge-gray">${escapeHtml(r.sucursalNombre || '')}</span>` : ''}
+            </div>
+            <p style="margin:6px 0 4px;font-size:12.5px;">
+              ${r.items.map((it) => `<span style="font-weight:600;">${escapeHtml(it.nombre)}</span> (+${it.cantidad})`).join(', ')}
+            </p>
+            ${r.usuario ? `<p style="margin:2px 0 0;font-size:11px;color:var(--muted);">Agregado por: ${escapeHtml(r.usuario)}</p>` : ''}
+          </div>
+        `).join('') : `<p style="color:var(--muted);font-size:12.5px;text-align:center;padding:20px 4px;">Todavía no se ha registrado ninguna entrada de material.</p>`}
+      </div>
+      <div style="display:flex;margin-top:16px;">
+        <button class="btn btn-ghost" style="flex:1;" data-action="cerrarHistorialIngresos">Cerrar</button>
+      </div>
+    </div>
+  `, '480px');
 }
 
 /* ---------------------------------------------------------------------
