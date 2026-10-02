@@ -670,7 +670,10 @@ async function procesarColaPendiente() {
     UI.syncEstado = huboFallo ? 'sin_conexion' : 'ok';
   } finally {
     procesandoColaPendiente = false;
-    if (UI.session && !hayEntradaActivaDelUsuario()) render();
+    // Esto corre solo cada 15 segundos de fondo (o después de cada escritura pendiente) — por eso
+    // usa la variante que no se lleva el scroll, para no interrumpir por ejemplo un conteo físico
+    // largo que se esté revisando en ese momento.
+    if (UI.session && !hayEntradaActivaDelUsuario()) renderPreservandoScroll();
   }
 }
 
@@ -779,8 +782,11 @@ function aplicarCambioRemoto(key, conv, payload) {
   ultimoSyncSnapshot[key] = JSON.parse(JSON.stringify(DB[key]));
   // Si el usuario está escribiendo en un formulario ahora mismo, no lo interrumpimos:
   // el dato ya quedó guardado arriba y se verá en pantalla en el siguiente refresco
-  // (por ejemplo al cerrar el formulario o navegar a otra pantalla).
-  if (UI.session && !hayEntradaActivaDelUsuario()) render();
+  // (por ejemplo al cerrar el formulario o navegar a otra pantalla). Y si no está escribiendo pero
+  // sí está viendo/desplazando una lista larga (como un conteo físico) cuando llega en vivo una
+  // venta o un ajuste de inventario de OTRA sucursal, se redibuja SIN que la pantalla se vaya de
+  // golpe hasta arriba: renderPreservandoScroll() regresa el scroll a donde estaba.
+  if (UI.session && !hayEntradaActivaDelUsuario()) renderPreservandoScroll();
 }
 
 if (SUPABASE_ACTIVO) {
@@ -1081,6 +1087,21 @@ function render() {
   }
   if (!vistaPermitida(UI.view, efectivoRol())) UI.view = 'venta';
   app.innerHTML = renderShell();
+}
+
+/** El contenido que se puede desplazar no es la ventana del navegador, sino el <div class="main">
+ *  (el <body> tiene overflow:hidden) — y cada render() lo reconstruye desde cero, así que el
+ *  nuevo siempre nace con scrollTop 0. Para un refresco que NO vino de que el usuario tocara algo
+ *  aquí mismo (por ejemplo, que llegue en vivo una venta o un ajuste de inventario de OTRA
+ *  sucursal mientras se está haciendo un conteo físico largo), usar render() a secas hace que la
+ *  pantalla "se suba sola" hasta arriba de la nada. Esta variante guarda en qué parte de la lista
+ *  estaba el usuario y lo regresa ahí mismo después de redibujar. */
+function renderPreservandoScroll() {
+  const mainAntes = document.querySelector('.main');
+  const scrollTop = mainAntes ? mainAntes.scrollTop : 0;
+  render();
+  const mainDespues = document.querySelector('.main');
+  if (mainDespues) mainDespues.scrollTop = scrollTop;
 }
 
 /** Pequeño indicador de si el sistema está conectado a la base de datos compartida. Nada se muestra si Supabase no está configurado. */
