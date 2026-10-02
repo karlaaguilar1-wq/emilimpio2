@@ -2305,7 +2305,10 @@ function h_importarCatalogo(file) {
       UI.productos.mensaje = 'Se importaron ' + n + ' productos correctamente.';
     } catch (e) { UI.productos.mensaje = 'No se pudo leer el archivo. Verifica el formato.'; }
     render();
-    setTimeout(() => { UI.productos.mensaje = ''; render(); }, 4000);
+    // El mensaje de "se importaron X productos" se borra solo pasados unos segundos — tiempo de
+    // sobra para que ya hayas bajado en la lista a revisar lo que se importó, así que este refresco
+    // usa la variante que no se lleva el scroll de vuelta al inicio.
+    setTimeout(() => { UI.productos.mensaje = ''; renderPreservandoScroll(); }, 4000);
   };
   reader.readAsArrayBuffer(file);
 }
@@ -2470,7 +2473,7 @@ function h_aplicarConteo() {
   inv.conteoExcluidos = {};
   inv.conteoEsInicial = false;
   render();
-  setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 9000);
+  setTimeout(() => { UI.productos.inv.mensaje = ''; renderPreservandoScroll(); }, 9000);
 }
 function h_abrirAgregarMaterial() {
   UI.productos.inv.showAgregar = true;
@@ -2871,7 +2874,7 @@ function h_guardarSacarMaterial() {
   UI.productos.inv.motivoSacar = '';
   UI.productos.inv.mensaje = 'Se registró la salida de material de ' + (suc ? suc.nombre : '') + '.';
   render();
-  setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 6000);
+  setTimeout(() => { UI.productos.inv.mensaje = ''; renderPreservandoScroll(); }, 6000);
 }
 
 /* ---------------------------------------------------------------------
@@ -2966,7 +2969,7 @@ function h_importarInventario(file) {
     } catch (e) {
       UI.productos.inv.mensaje = 'No se pudo leer el archivo. Verifica el formato.';
       render();
-      setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 6000);
+      setTimeout(() => { UI.productos.inv.mensaje = ''; renderPreservandoScroll(); }, 6000);
     }
   };
   reader.readAsArrayBuffer(file);
@@ -2991,7 +2994,7 @@ function h_confirmarImportModo(id, modo) {
   UI.productos.inv.importModoOpen = false;
   UI.productos.inv.importPendiente = null;
   render();
-  setTimeout(() => { UI.productos.inv.mensaje = ''; render(); }, 9000);
+  setTimeout(() => { UI.productos.inv.mensaje = ''; renderPreservandoScroll(); }, 9000);
 }
 function renderImportModoModal() {
   const pend = UI.productos.inv.importPendiente;
@@ -3340,7 +3343,7 @@ function h_generarNomina() {
   UI.gastos.nomina.open = false;
   UI.gastos.mensaje = (existente ? 'Se actualizó' : 'Se generó') + ' el gasto de nómina de ' + nombreMesLegible(n.mes) + ' para ' + suc.nombre + ': ' + formatoMoneda(total) + '.';
   render();
-  setTimeout(() => { UI.gastos.mensaje = ''; render(); }, 8000);
+  setTimeout(() => { UI.gastos.mensaje = ''; renderPreservandoScroll(); }, 8000);
 }
 function renderNominaResumen() {
   const n = UI.gastos.nomina;
