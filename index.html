@@ -523,6 +523,7 @@ const TABLAS_SUPABASE = {
   },
   gastos: {
     tabla: 'gastos',
+    incremental: true, // tabla que crece sin parar: en refrescos automáticos solo trae los últimos días
     aFila: (g) => ({
       id: g.id, fecha: g.fecha, sucursal_id: g.sucursalId, sucursal_nombre: g.sucursalNombre,
       tipo: g.tipo, concepto: g.concepto, monto: g.monto, nota: g.nota || null, es_fijo: !!g.esFijo,
@@ -541,6 +542,7 @@ const TABLAS_SUPABASE = {
   },
   retiros: {
     tabla: 'retiros',
+    incremental: true, // tabla que crece sin parar: en refrescos automáticos solo trae los últimos días
     aFila: (r) => ({
       id: r.id, fecha: r.fecha, sucursal_id: r.sucursalId, sucursal_nombre: r.sucursalNombre,
       usuario: r.usuario || null, items: r.items, motivo: r.motivo,
@@ -552,6 +554,7 @@ const TABLAS_SUPABASE = {
   },
   ingresos: {
     tabla: 'ingresos',
+    incremental: true, // tabla que crece sin parar: en refrescos automáticos solo trae los últimos días
     aFila: (r) => ({
       id: r.id, fecha: r.fecha, sucursal_id: r.sucursalId, sucursal_nombre: r.sucursalNombre,
       usuario: r.usuario || null, items: r.items,
@@ -563,6 +566,7 @@ const TABLAS_SUPABASE = {
   },
   ventas: {
     tabla: 'ventas',
+    incremental: true, // tabla que crece sin parar: en refrescos automáticos solo trae los últimos días
     aFila: (v) => ({
       id: v.id, fecha: v.fecha, sucursal_id: v.sucursalId, sucursal_nombre: v.sucursalNombre, vendedor: v.vendedor || null,
       cliente_id: v.clienteId || null, cliente_nombre: v.clienteNombre || null, pay_method: v.payMethod || null,
@@ -725,39 +729,99 @@ function sincronizarFijarStock(sucursalId, productoId, valor) {
 }
 
 /* --- Carga inicial desde Supabase + suscripción a cambios de otras sucursales en vivo --- */
-async function hidratarDesdeSupabase() {
-  if (!SUPABASE_ACTIVO || !sb) return;
-  UI.syncEstado = 'sincronizando';
-  let huboExito = false;
-  for (const [key, conv] of Object.entries(TABLAS_SUPABASE)) {
-    try {
-      const { data, error } = await sb.from(conv.tabla).select('*');
-      if (error || !data) continue;
-      const lista = data.map(conv.deFila);
-      // No se reemplaza sin más lo que ya había en este aparato: si algo se guardó aquí pero
-      // todavía no llega al servidor (por ejemplo porque en ese momento faltaba una columna o
-      // tabla, como pasó con "gastos" y "trabajadores"), conservarlo evita que una recarga de
-      // página lo borre de la nada. Lo que sí venga del servidor manda sobre la copia local.
-      const idDe = conv.idDe || ((x) => x.id);
-      const idsDelServidor = new Set(lista.map(idDe));
-      const localesSinSubirTodavia = (DB[key] || []).filter((x) => !idsDelServidor.has(idDe(x)));
-      const fusionada = lista.concat(localesSinSubirTodavia);
-      DB[key] = fusionada;
-      save(key, fusionada);
-      // El snapshot queda como lo que SÍ confirmó el servidor: así, lo que se conservó localmente
-      // se sigue viendo como "pendiente de subir" y este mismo ciclo lo vuelve a encolar solo.
-      ultimoSyncSnapshot[key] = JSON.parse(JSON.stringify(lista));
-      if (localesSinSubirTodavia.length) sincronizarConSupabase(key);
-      huboExito = true;
-    } catch (e) { /* sin conexión: seguimos con lo que ya había guardado localmente */ }
+const TAM_PAGINA_SUPABASE = 1000; // Supabase entrega máximo 1000 filas por consulta; se pide por tandas hasta traerlas todas
+const DIAS_REFRESCO_LIGERO = 7;   // en los refrescos automáticos, las tablas con fecha solo traen los últimos días
+
+/** Trae una tabla completa de Supabase pidiéndola por tandas de 1000 (si no, las ventas se quedarían
+ *  truncadas en las primeras 1000 filas y las más nuevas no aparecerían). Regresa null si algo falla,
+ *  para no reemplazar lo local con una lista incompleta. */
+async function traerTablaPaginada(conv, desdeFechaISO) {
+  const cols = conv.conflictCols || ['id'];
+  let todas = [];
+  for (let desde = 0; ; desde += TAM_PAGINA_SUPABASE) {
+    let q = sb.from(conv.tabla).select('*');
+    if (desdeFechaISO) q = q.gte('fecha', desdeFechaISO);
+    cols.forEach((c) => { q = q.order(c); }); // orden estable: así ninguna fila se salta ni se repite entre tandas
+    const { data, error } = await q.range(desde, desde + TAM_PAGINA_SUPABASE - 1);
+    if (error || !data) return null;
+    todas = todas.concat(data);
+    if (data.length < TAM_PAGINA_SUPABASE) break;
   }
-  UI.syncEstado = huboExito ? 'ok' : 'sin_conexion';
-  render();
+  return todas;
+}
+
+let realtimeSuscrito = false;
+let hidratando = false;
+let ultimaHidratacionMs = 0;
+async function hidratarDesdeSupabase(opciones) {
+  if (!SUPABASE_ACTIVO || !sb || hidratando) return;
+  hidratando = true;
+  const ligero = !!(opciones && opciones.ligero);
+  if (!ligero) UI.syncEstado = 'sincronizando';
+  let huboExito = false;
+  try {
+    const desdeLigero = new Date(Date.now() - DIAS_REFRESCO_LIGERO * 86400000).toISOString();
+    for (const [key, conv] of Object.entries(TABLAS_SUPABASE)) {
+      try {
+        const idDe = conv.idDe || ((x) => x.id);
+        if (ligero && conv.incremental) {
+          // Refresco automático: de las tablas que crecen sin parar (ventas, gastos…) solo se traen
+          // los últimos días y se mezclan con lo que ya hay, sin quitar nada.
+          const filas = await traerTablaPaginada(conv, desdeLigero);
+          if (!filas) continue;
+          const porId = new Map((DB[key] || []).map((x) => [idDe(x), x]));
+          const snapPorId = new Map((ultimoSyncSnapshot[key] || []).map((x) => [idDe(x), x]));
+          filas.map(conv.deFila).forEach((x) => { porId.set(idDe(x), x); snapPorId.set(idDe(x), JSON.parse(JSON.stringify(x))); });
+          DB[key] = Array.from(porId.values());
+          save(key, DB[key]);
+          ultimoSyncSnapshot[key] = Array.from(snapPorId.values());
+          huboExito = true;
+          continue;
+        }
+        const data = await traerTablaPaginada(conv, null);
+        if (!data) continue;
+        const lista = data.map(conv.deFila);
+        // No se reemplaza sin más lo que ya había en este aparato: si algo se guardó aquí pero
+        // todavía no llega al servidor (por ejemplo porque en ese momento faltaba una columna o
+        // tabla, como pasó con "gastos" y "trabajadores"), conservarlo evita que una recarga de
+        // página lo borre de la nada. Lo que sí venga del servidor manda sobre la copia local.
+        const idsDelServidor = new Set(lista.map(idDe));
+        const localesSinSubirTodavia = (DB[key] || []).filter((x) => !idsDelServidor.has(idDe(x)));
+        const fusionada = lista.concat(localesSinSubirTodavia);
+        DB[key] = fusionada;
+        save(key, fusionada);
+        // El snapshot queda como lo que SÍ confirmó el servidor: así, lo que se conservó localmente
+        // se sigue viendo como "pendiente de subir" y este mismo ciclo lo vuelve a encolar solo.
+        ultimoSyncSnapshot[key] = JSON.parse(JSON.stringify(lista));
+        if (localesSinSubirTodavia.length) sincronizarConSupabase(key);
+        huboExito = true;
+      } catch (e) { /* sin conexión: seguimos con lo que ya había guardado localmente */ }
+    }
+    UI.syncEstado = huboExito ? 'ok' : 'sin_conexion';
+    ultimaHidratacionMs = Date.now();
+  } finally {
+    hidratando = false;
+  }
+  if (ligero) {
+    if (UI.session && !hayEntradaActivaDelUsuario()) renderPreservandoScroll();
+  } else {
+    render();
+  }
   suscribirCambiosRemotos();
 }
 
+/** Vuelve a traer lo más reciente del servidor. Se llama sola cada minuto, al regresar a la pestaña
+ *  y al recuperar internet: así, aunque la conexión "en vivo" se haya cortado sin que nadie lo notara
+ *  (compu dormida, red caída, muchas horas abierto), las ventas de otras sucursales llegan igual. */
+function refrescarDesdeServidor() {
+  if (!SUPABASE_ACTIVO || !sb || !UI.session || hidratando) return;
+  if (Date.now() - ultimaHidratacionMs < 20000) return; // evita refrescar dos veces seguidas
+  hidratarDesdeSupabase({ ligero: true });
+}
+
 function suscribirCambiosRemotos() {
-  if (!SUPABASE_ACTIVO || !sb) return;
+  if (!SUPABASE_ACTIVO || !sb || realtimeSuscrito) return;
+  realtimeSuscrito = true;
   Object.entries(TABLAS_SUPABASE).forEach(([key, conv]) => {
     if (conv.sinRealtime) return; // ej. usuarios: se actualiza con el botón "Actualizar" para nunca transmitir el hash de la contraseña
     sb.channel('cambios_' + conv.tabla)
@@ -804,6 +868,10 @@ function aplicarCambioRemoto(key, conv, payload) {
 if (SUPABASE_ACTIVO) {
   window.addEventListener('online', procesarColaPendiente);
   setInterval(procesarColaPendiente, 15000);
+  // Refresco automático desde el servidor (ver refrescarDesdeServidor).
+  window.addEventListener('online', refrescarDesdeServidor);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refrescarDesdeServidor(); });
+  setInterval(() => { if (!document.hidden) refrescarDesdeServidor(); }, 60000);
 }
 
 
@@ -1126,9 +1194,13 @@ function renderSyncBadge() {
     inactivo: { texto: '🔄 Sincronizando…', color: 'var(--muted)' },
   };
   const e = estilos[UI.syncEstado] || estilos.inactivo;
-  const numErrores = (efectivoRol() === 'OWNER') ? erroresSync().length : 0;
+  // El aviso de "no se pudo subir" lo ve CUALQUIER usuario (no solo el Dueño): si una venta no llega a la
+  // base compartida, quien está vendiendo en esa sucursal tiene que enterarse en ese momento.
+  const numErrores = erroresSync().length;
+  const numPendientes = colaPendiente().length;
   return `<p style="font-size:10.5px;color:${e.color};text-align:center;margin:0 0 8px;">${e.texto}</p>
-    ${numErrores ? `<p style="text-align:center;margin:-4px 0 8px;"><button style="border:none;background:none;color:var(--red);font-size:10.5px;text-decoration:underline;cursor:pointer;padding:0;" data-action="verErroresSync">⚠️ ${numErrores} producto(s) no se pudieron subir — ver detalle</button></p>` : ''}`;
+    ${(!numErrores && numPendientes) ? `<p style="font-size:10.5px;color:var(--muted);text-align:center;margin:-4px 0 8px;">⏳ ${numPendientes} cambio(s) subiendo…</p>` : ''}
+    ${numErrores ? `<p style="text-align:center;margin:-4px 0 8px;"><button style="border:none;background:none;color:var(--red);font-size:10.5px;text-decoration:underline;cursor:pointer;padding:0;" data-action="verErroresSync">⚠️ ${numErrores} cambio(s) NO se subieron (ventas u otros) — ver detalle</button></p>` : ''}`;
 }
 function h_verErroresSync() { UI.syncErroresOpen = true; refreshModalRoot(); }
 function h_cerrarErroresSync() { UI.syncErroresOpen = false; refreshModalRoot(); }
@@ -1154,7 +1226,7 @@ function renderErroresSyncModal() {
   const errores = erroresSync().slice().reverse();
   return modalWrap(`
     <div class="modal-pad">
-      <h3>Productos que no se pudieron subir</h3>
+      <h3>Cambios que no se pudieron subir</h3>
       <p style="font-size:12px;color:var(--muted);margin-top:4px;">Estos cambios se guardaron en este aparato pero la base de datos compartida los rechazó, así que no llegaron a las demás sucursales. Revisa el mensaje de cada uno — muchas veces indica el motivo.</p>
       <div style="max-height:320px;overflow-y:auto;margin-top:12px;">
         ${errores.length ? errores.map((e) => `
