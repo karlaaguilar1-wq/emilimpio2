@@ -144,6 +144,38 @@
   .btn-ghost { background: var(--surface); color: var(--ink-soft); border-color: var(--line); }
   .btn-ghost:not(:disabled):hover { background: var(--line-soft); border-color: var(--line); }
   .btn-danger-text { color: var(--red); font-weight: 600; background: none; border: none; font-size: 12.5px; }
+  .viz-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr)); gap:16px; margin-bottom:20px; }
+  .viz-card { padding:18px; min-width:0; }
+  .viz-titulo { margin:0 0 4px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); }
+  .viz-sub { margin:0 0 14px; font-size:12px; color:var(--muted); }
+  .viz-vacio { color:var(--muted); font-size:12.5px; text-align:center; padding:18px 4px; margin:0; }
+  .viz-dona-wrap { display:flex; gap:16px; align-items:center; justify-content:center; flex-wrap:wrap; }
+  .viz-dona-wrap svg { width:150px; height:150px; flex-shrink:0; }
+  .viz-arco { transition: opacity .12s; cursor:default; }
+  .viz-arco:hover { opacity:.82; }
+  .viz-leyenda { flex:1 1 210px; min-width:0; display:flex; flex-direction:column; gap:7px; }
+  .viz-leyenda-fila { display:flex; align-items:center; gap:8px; font-size:12.5px; min-width:0; }
+  .viz-sw { width:10px; height:10px; border-radius:3px; flex-shrink:0; }
+  .viz-leyenda-nombre { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; color:var(--navy); }
+  .viz-leyenda-val { white-space:nowrap; text-align:right; }
+  .viz-fila { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .viz-fila:last-child { margin-bottom:0; }
+  .viz-fila-nombre { width:118px; flex-shrink:0; font-size:12.5px; font-weight:600; color:var(--navy); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .viz-pista { flex:1; min-width:30px; background:var(--line-soft); border-radius:4px; height:14px; position:relative; }
+  .viz-barra { height:100%; border-radius:0 4px 4px 0; transition: opacity .12s; }
+  .viz-fila:hover .viz-barra, .viz-col:hover .viz-col-barra { opacity:.8; }
+  .viz-fila-valor { width:92px; flex-shrink:0; text-align:right; font-size:12.5px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .viz-cols { display:flex; align-items:flex-end; gap:6px; height:150px; padding-top:18px; }
+  .viz-col { flex:1; min-width:0; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; position:relative; }
+  .viz-col-barra { width:100%; max-width:24px; border-radius:4px 4px 0 0; min-height:2px; transition: opacity .12s; }
+  .viz-col-val { position:absolute; left:50%; transform:translateX(-50%); font-size:10.5px; font-weight:700; color:var(--ink); white-space:nowrap; }
+  .viz-eje { display:flex; gap:6px; border-top:1px solid var(--line); padding-top:6px; margin-top:0; }
+  .viz-eje span { flex:1; text-align:center; font-size:11px; color:var(--muted); min-width:0; }
+  .viz-apilada { display:flex; gap:2px; height:20px; margin:4px 0 12px; }
+  .viz-apilada > div { border-radius:4px; min-width:3px; }
+  .viz-clave { display:flex; flex-wrap:wrap; gap:6px 16px; margin-bottom:12px; font-size:12px; color:var(--ink-soft); }
+  .viz-clave span { display:inline-flex; align-items:center; gap:6px; }
+  #viz-tip { position:fixed; z-index:9999; display:none; pointer-events:none; background:var(--ink); color:#fff; font-size:12px; line-height:1.35; padding:6px 9px; border-radius:8px; max-width:240px; box-shadow:var(--shadow-pop); }
   .nomina-dia { width:32px; height:32px; border-radius:50%; border:1.5px solid var(--line); background:var(--card, #fff); color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; padding:0; }
   .nomina-dia.on { background:var(--navy); border-color:var(--navy); color:#fff; }
   .btn-link { color: var(--navy-light); font-weight: 600; background: none; border: none; font-size: 12.5px; }
@@ -3774,6 +3806,175 @@ function renderNominaModal() {
 }
 
 /* ---------------------------------------------------------------------
+ * GRÁFICAS (pasteles, barras y columnas dibujadas a mano, sin librerías)
+ * Reglas: cada sucursal/tipo conserva SIEMPRE su color (no cambia al filtrar), una sola serie = un solo color,
+ * y todo lo que dice el color también se puede leer en la leyenda o al pasar el dedo/mouse por encima.
+ * ------------------------------------------------------------------- */
+const VIZ_COLORES = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+const VIZ_OTROS = '#C3C2B7';
+const VIZ_GRIS_SUAVE = '#C9CED6';
+function vizColorSucursal(id) {
+  const i = DB.sucursales.findIndex((x) => x.id === id);
+  return i >= 0 && i < VIZ_COLORES.length ? VIZ_COLORES[i] : VIZ_OTROS;
+}
+function vizCompacto(v) {
+  const n = Math.abs(v), signo = v < 0 ? '-' : '';
+  if (n >= 1e6) return signo + '$' + (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e4) return signo + '$' + (n / 1e3).toFixed(1) + 'K';
+  return signo + '$' + Math.round(n).toLocaleString('es-MX');
+}
+/** Une en "Otras" todo lo que no tiene un color propio (ya no caben más de 8 colores distintos). */
+function vizAgruparOtras(items) {
+  const propios = items.filter((i) => i.color !== VIZ_OTROS);
+  const resto = items.filter((i) => i.color === VIZ_OTROS);
+  if (resto.length) propios.push({ label: 'Otras (' + resto.length + ')', value: resto.reduce((a, b) => a + b.value, 0), color: VIZ_OTROS });
+  return propios;
+}
+/** Pastel (dona) con leyenda: items = [{label, value, color}] */
+function vizDona(items, opts) {
+  opts = opts || {};
+  const formato = opts.formato || formatoMoneda;
+  const datos = items.filter((i) => i.value > 0).sort((a, b) => b.value - a.value);
+  const total = datos.reduce((s, i) => s + i.value, 0);
+  if (!(total > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
+  const R = 46, C = 2 * Math.PI * R, GAP = datos.length > 1 ? 1.6 : 0;
+  let acum = 0;
+  const arcos = datos.map((i) => {
+    const len = (i.value / total) * C;
+    const seg = Math.max(len - GAP, 0.6);
+    const inicio = acum + GAP / 2;
+    acum += len;
+    const tip = i.label + ': ' + formato(i.value) + ' (' + ((i.value / total) * 100).toFixed(1) + '%)';
+    return `<circle class="viz-arco" cx="60" cy="60" r="${R}" fill="none" stroke="${i.color}" stroke-width="20" stroke-dasharray="${seg.toFixed(3)} ${(C - seg).toFixed(3)}" stroke-dashoffset="${(-inicio).toFixed(3)}" transform="rotate(-90 60 60)" data-tip="${escapeHtml(tip)}"></circle>`;
+  }).join('');
+  const centro = opts.centro !== undefined ? opts.centro : vizCompacto(total);
+  return `<div class="viz-dona-wrap">
+    <svg viewBox="0 0 120 120" role="img" aria-label="${escapeHtml(opts.aria || 'Gráfica de pastel')}">
+      ${arcos}
+      <text x="60" y="58" text-anchor="middle" style="font-size:12px;font-weight:800;fill:var(--ink);">${escapeHtml(centro)}</text>
+      <text x="60" y="71" text-anchor="middle" style="font-size:7px;fill:var(--muted);">${escapeHtml(opts.centroSub || 'total')}</text>
+    </svg>
+    <div class="viz-leyenda">
+      ${datos.map((i) => `
+        <div class="viz-leyenda-fila" data-tip="${escapeHtml(i.label + ': ' + formato(i.value))}">
+          <span class="viz-sw" style="background:${i.color};"></span>
+          <span class="viz-leyenda-nombre">${escapeHtml(i.label)}</span>
+          <span class="viz-leyenda-val"><b>${((i.value / total) * 100).toFixed(1)}%</b> <span style="color:var(--muted);">· ${escapeHtml(formato(i.value))}</span></span>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+/** Barras horizontales de un solo color: items = [{label, value}] ya ordenados */
+function vizBarrasH(items, opts) {
+  opts = opts || {};
+  const formato = opts.formato || formatoMoneda;
+  const color = opts.color || VIZ_COLORES[0];
+  const max = Math.max(...items.map((i) => i.value), 0);
+  if (!(max > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
+  return items.map((i) => `
+    <div class="viz-fila" data-tip="${escapeHtml(i.label + ': ' + formato(i.value))}">
+      <span class="viz-fila-nombre" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</span>
+      <div class="viz-pista"><div class="viz-barra" style="width:${Math.max((i.value / max) * 100, i.value > 0 ? 1.5 : 0)}%;background:${color};"></div></div>
+      <span class="viz-fila-valor">${escapeHtml(formato(i.value))}</span>
+    </div>`).join('');
+}
+/** Columnas: items = [{label, value}]. El valor más alto va resaltado y con su número; el resto en gris, con su dato al pasar el dedo. */
+function vizColumnas(items, opts) {
+  opts = opts || {};
+  const formato = opts.formato || vizCompacto;
+  const max = Math.max(...items.map((i) => i.value), 0);
+  if (!(max > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
+  const idxMax = items.findIndex((i) => i.value === max);
+  const alto = 150 - 18; // alto útil de la zona de barras
+  return `<div class="viz-cols">${items.map((i, idx) => {
+    const h = Math.max((i.value / max) * (alto - 16), i.value > 0 ? 2 : 0);
+    const esMax = idx === idxMax;
+    return `<div class="viz-col" data-tip="${escapeHtml((i.tip || i.label) + ': ' + (opts.formatoTip || formatoMoneda)(i.value))}">
+      ${esMax ? `<span class="viz-col-val" style="bottom:${h + 3}px;">${escapeHtml(formato(i.value))}</span>` : ''}
+      <div class="viz-col-barra" style="height:${h}px;background:${esMax ? VIZ_COLORES[0] : VIZ_GRIS_SUAVE};"></div>
+    </div>`;
+  }).join('')}</div>
+  <div class="viz-eje">${items.map((i) => `<span>${escapeHtml(i.label)}</span>`).join('')}</div>`;
+}
+/** Barra apilada que suma 100%: items = [{label, value, color}] */
+function vizApilada(items, opts) {
+  opts = opts || {};
+  const formato = opts.formato || formatoMoneda;
+  const datos = items.filter((i) => i.value > 0);
+  const total = datos.reduce((s, i) => s + i.value, 0);
+  if (!(total > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
+  return `<div class="viz-apilada" role="img" aria-label="${escapeHtml(opts.aria || 'Barra de proporciones')}">${datos.map((i) =>
+    `<div style="flex:${i.value};background:${i.color};" data-tip="${escapeHtml(i.label + ': ' + formato(i.value) + ' (' + ((i.value / total) * 100).toFixed(1) + '%)')}"></div>`).join('')}</div>
+  <div class="viz-leyenda">${datos.map((i) => `
+    <div class="viz-leyenda-fila">
+      <span class="viz-sw" style="background:${i.color};"></span>
+      <span class="viz-leyenda-nombre">${escapeHtml(i.label)}</span>
+      <span class="viz-leyenda-val"><b>${((i.value / total) * 100).toFixed(1)}%</b> <span style="color:var(--muted);">· ${escapeHtml(formato(i.value))}</span></span>
+    </div>`).join('')}</div>`;
+}
+/** Barras que salen del cero hacia la derecha (positivo) o la izquierda (negativo): items = [{label, value}] */
+function vizDivergente(items) {
+  const maxPos = Math.max(...items.map((i) => i.value), 0);
+  const maxNeg = Math.max(...items.map((i) => -i.value), 0);
+  const rango = maxPos + maxNeg;
+  if (!(rango > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
+  const cero = (maxNeg / rango) * 100;
+  return items.map((i) => {
+    const ancho = (Math.abs(i.value) / rango) * 100;
+    const izq = i.value >= 0 ? cero : cero - ancho;
+    const color = i.value >= 0 ? 'var(--emerald)' : 'var(--red)';
+    const radio = i.value >= 0 ? '0 4px 4px 0' : '4px 0 0 4px';
+    return `<div class="viz-fila" data-tip="${escapeHtml(i.label + ': ' + (i.value >= 0 ? '+' : '-') + formatoMoneda(Math.abs(i.value)))}">
+      <span class="viz-fila-nombre" title="${escapeHtml(i.label)}">${escapeHtml(i.label)}</span>
+      <div class="viz-pista">
+        <div class="viz-barra" style="position:absolute;left:${izq}%;width:${Math.max(ancho, i.value !== 0 ? 1 : 0)}%;background:${color};border-radius:${radio};"></div>
+        <div style="position:absolute;left:${cero}%;top:-3px;bottom:-3px;width:1px;background:var(--ink-soft);"></div>
+      </div>
+      <span class="viz-fila-valor" style="color:${i.value >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${i.value >= 0 ? '▲ +' : '▼ -'}${escapeHtml(formatoMoneda(Math.abs(i.value)))}</span>
+    </div>`;
+  }).join('');
+}
+/** Dos barras por sucursal (ganado y gastos) en la misma escala */
+function vizDobleBarra(items) {
+  const max = Math.max(...items.flatMap((i) => [i.a, i.b]), 0);
+  if (!(max > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
+  const barra = (valor, color, etiqueta) => `<div class="viz-fila" style="margin-bottom:3px;" data-tip="${escapeHtml(etiqueta + ': ' + formatoMoneda(valor))}">
+      <div class="viz-pista" style="height:10px;"><div class="viz-barra" style="width:${Math.max((valor / max) * 100, valor > 0 ? 1 : 0)}%;background:${color};"></div></div>
+      <span class="viz-fila-valor" style="width:84px;font-size:11.5px;font-weight:600;">${escapeHtml(formatoMoneda(valor))}</span></div>`;
+  return `<div class="viz-clave"><span><i class="viz-sw" style="background:${VIZ_COLORES[0]};"></i>Has ganado</span><span><i class="viz-sw" style="background:${VIZ_COLORES[1]};"></i>Gastos</span></div>` +
+    items.map((i) => `<div style="margin-bottom:12px;">
+      <div style="font-size:12.5px;font-weight:700;color:var(--navy);margin-bottom:4px;">${escapeHtml(i.label)}</div>
+      ${barra(i.a, VIZ_COLORES[0], i.label + ' · ganado')}${barra(i.b, VIZ_COLORES[1], i.label + ' · gastos')}
+    </div>`).join('');
+}
+/** Globo con el dato al pasar el mouse o tocar una parte de la gráfica (cualquier elemento con data-tip). */
+(function () {
+  let tip = null, ocultar = null;
+  function obtener() {
+    if (!tip) { tip = document.createElement('div'); tip.id = 'viz-tip'; document.body.appendChild(tip); }
+    return tip;
+  }
+  function poner(e) {
+    const el = e.target && e.target.closest ? e.target.closest('[data-tip]') : null;
+    if (!el) { if (tip) tip.style.display = 'none'; return; }
+    const t = obtener();
+    t.textContent = el.getAttribute('data-tip');
+    t.style.display = 'block';
+    const w = t.offsetWidth, h = t.offsetHeight;
+    let x = e.clientX + 12, y = e.clientY - h - 10;
+    if (x + w > window.innerWidth - 8) x = Math.max(8, e.clientX - w - 12);
+    if (y < 8) y = e.clientY + 16;
+    t.style.left = x + 'px'; t.style.top = y + 'px';
+    clearTimeout(ocultar);
+    if (e.pointerType === 'touch') ocultar = setTimeout(() => { t.style.display = 'none'; }, 2500);
+  }
+  document.addEventListener('pointerover', poner);
+  document.addEventListener('pointermove', (e) => { if (tip && tip.style.display === 'block' && e.pointerType !== 'touch') poner(e); });
+  document.addEventListener('pointerout', (e) => { if (tip && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('[data-tip]'))) tip.style.display = 'none'; });
+  document.addEventListener('scroll', () => { if (tip) tip.style.display = 'none'; }, true);
+})();
+
+/* ---------------------------------------------------------------------
  * REPORTE PRODUCTOS
  * ------------------------------------------------------------------- */
 function renderReporteProductos() {
@@ -3856,6 +4057,22 @@ function renderReportesBody() {
   }).sort((a, b) => b.monto - a.monto);
   const sucursalGanadora = comparativoSucursales.length && comparativoSucursales[0].monto > 0 ? comparativoSucursales[0] : null;
 
+  // ---- Datos para las gráficas ----
+  const gSucursales = vizAgruparOtras(comparativoSucursales.map(({ sucursal, monto }) => ({ label: sucursal.nombre, value: monto, color: vizColorSucursal(sucursal.id) })));
+  const gProductos = [...filas].filter((x) => x.ingresos > 0).sort((a, b) => b.ingresos - a.ingresos).slice(0, 8).map((x) => ({ label: x.nombre, value: x.ingresos }));
+  const METODOS = [['efectivo', 'Efectivo', VIZ_COLORES[0]], ['tarjeta', 'Tarjeta', VIZ_COLORES[1]], ['transferencia', 'Transferencia', VIZ_COLORES[2]]];
+  const gPago = METODOS.map(([k, nombre, color]) => ({ label: nombre, color, value: ventasFiltradas.filter((v) => v.payMethod === k).reduce((a, v) => a + v.total, 0) }));
+  const sinMetodo = ventasFiltradas.filter((v) => !METODOS.some(([k]) => k === v.payMethod)).reduce((a, v) => a + v.total, 0);
+  if (sinMetodo > 0) gPago.push({ label: 'Sin método', value: sinMetodo, color: VIZ_OTROS });
+  const NOMBRES_DIA_SEM = [[1, 'L', 'Lunes'], [2, 'M', 'Martes'], [3, 'X', 'Miércoles'], [4, 'J', 'Jueves'], [5, 'V', 'Viernes'], [6, 'S', 'Sábado'], [0, 'D', 'Domingo']];
+  const gDiaSemana = NOMBRES_DIA_SEM.map(([n, corto, largo]) => ({ label: corto, tip: largo, value: ventasFiltradas.filter((v) => new Date(v.fecha).getDay() === n).reduce((a, v) => a + v.total, 0) }));
+  const porHora = new Array(24).fill(0);
+  ventasFiltradas.forEach((v) => { porHora[new Date(v.fecha).getHours()] += v.total; });
+  const horasConVenta = porHora.map((m, h) => (m > 0 ? h : -1)).filter((h) => h >= 0);
+  const hIni = horasConVenta.length ? Math.min(8, ...horasConVenta) : 8, hFin = horasConVenta.length ? Math.max(20, ...horasConVenta) : 20;
+  const gHoras = [];
+  for (let h = hIni; h <= hFin; h++) gHoras.push({ label: h % 2 === 0 ? String(h) : '', tip: h + ':00 a ' + h + ':59', value: porHora[h] });
+
   return `
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Ventas totales de ${escapeHtml(sucNombre)}</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(totalVentas)}</div><div class="kpi-sub">${ventasFiltradas.length} tickets</div></div>
@@ -3863,6 +4080,34 @@ function renderReportesBody() {
       <div class="kpi"><div class="kpi-label">Producto top</div><div class="kpi-value" style="font-size:17px;">${top && top.litros > 0 ? escapeHtml(top.nombre) : '—'}</div>${top && top.litros > 0 ? `<div class="kpi-sub">${top.litros.toFixed(1)} vendidos</div>` : ''}</div>
       <div class="kpi"><div class="kpi-label">Stock bajo</div><div class="kpi-value" style="color:var(--red);">${stockBajoCount}</div><div class="kpi-sub">productos con menos de 10 en ${escapeHtml(sucNombre)}</div></div>
     </div>
+    <div class="viz-grid">
+      <div class="card viz-card">
+        <h3 class="viz-titulo">🏪 Qué sucursal vende más</h3>
+        <p class="viz-sub">Parte de las ventas totales que aporta cada sucursal en el periodo (todas las sucursales).</p>
+        ${vizDona(gSucursales, { aria: 'Ventas por sucursal', centroSub: 'vendido' })}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">🧴 Productos que más dinero dejan</h3>
+        <p class="viz-sub">Los 8 productos con más ventas ($) en ${escapeHtml(sucNombre)}.</p>
+        ${vizBarrasH(gProductos)}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">💳 Cómo te pagan</h3>
+        <p class="viz-sub">Ventas por forma de pago en ${escapeHtml(sucNombre)}.</p>
+        ${vizDona(gPago, { aria: 'Ventas por forma de pago', centroSub: 'vendido' })}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">📅 Qué día de la semana se vende más</h3>
+        <p class="viz-sub">Ventas ($) por día de la semana en ${escapeHtml(sucNombre)}. Resaltado: el mejor día.</p>
+        ${vizColumnas(gDiaSemana)}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">🕒 A qué hora se vende más</h3>
+        <p class="viz-sub">Ventas ($) por hora del día en ${escapeHtml(sucNombre)}. Resaltada: la mejor hora.</p>
+        ${vizColumnas(gHoras)}
+      </div>
+    </div>
+
     <div class="card" style="padding:18px;margin-bottom:20px;">
       <h3 style="margin:0 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);">📂 Ventas por familia</h3>
       <p style="margin:0 0 16px;font-size:12px;color:var(--muted);">Qué tanto representa cada familia de producto del total vendido en ${escapeHtml(sucNombre)}</p>
@@ -4024,6 +4269,18 @@ function renderUtilidadesBody() {
     return { sucursal: s, calc: calcularUtilidadFiltrada(fSucursal) };
   });
 
+  // ---- Datos para las gráficas ----
+  const gastosFiltrados = DB.gastos.filter((g) => pasaFiltroSucursal(g.sucursalId, f) && pasaFiltroFechaModo(g.fecha, f));
+  const gGastosTipo = GASTO_TIPOS.map((tipo, i) => ({ label: tipo, color: VIZ_COLORES[i % VIZ_COLORES.length], value: gastosFiltrados.filter((g) => g.tipo === tipo).reduce((a, g) => a + g.monto, 0) }));
+  const otrosGastos = gastosFiltrados.filter((g) => !GASTO_TIPOS.includes(g.tipo)).reduce((a, g) => a + g.monto, 0);
+  if (otrosGastos > 0) gGastosTipo.push({ label: 'Sin tipo', value: otrosGastos, color: VIZ_OTROS });
+  const gDoble = comparativo.map(({ sucursal, calc: c }) => ({ label: sucursal.nombre, a: Math.max(c.gananciaBruta, 0), b: c.gastosTotal }));
+  const gQueda = comparativo.map(({ sucursal, calc: c }) => ({ label: sucursal.nombre, value: c.utilidadNeta }));
+  const excede = calc.costoTotal + calc.gastosTotal - calc.ventasTotales;
+  const gReparto = calc.utilidadNeta >= 0
+    ? [{ label: 'Costo del producto', value: calc.costoTotal, color: VIZ_COLORES[0] }, { label: 'Gastos', value: calc.gastosTotal, color: VIZ_COLORES[1] }, { label: 'Te queda', value: calc.utilidadNeta, color: 'var(--emerald)' }]
+    : [{ label: 'Costo del producto', value: calc.costoTotal, color: VIZ_COLORES[0] }, { label: 'Gastos', value: calc.gastosTotal, color: VIZ_COLORES[1] }];
+
   return `
     <div class="card" style="padding:18px;margin-bottom:22px;">
       <h3 style="margin:0 0 12px;">${escapeHtml(sucNombre)}</h3>
@@ -4059,6 +4316,29 @@ function renderUtilidadesBody() {
         </tbody>
       </table></div>` : ''}
     </div>
+    <div class="viz-grid">
+      <div class="card viz-card">
+        <h3 class="viz-titulo">💵 A dónde se va lo que vendes</h3>
+        <p class="viz-sub">${calc.utilidadNeta >= 0 ? 'De cada $100 vendidos en ' + escapeHtml(sucNombre) + ': cuánto es costo, cuánto gasto y cuánto te queda.' : 'Costos y gastos de ' + escapeHtml(sucNombre) + ': juntos superan lo vendido por ' + escapeHtml(formatoMoneda(excede)) + '.'}</p>
+        ${vizApilada(gReparto, { aria: 'Reparto de lo vendido' })}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">🧾 En qué se van los gastos</h3>
+        <p class="viz-sub">Gastos de ${escapeHtml(sucNombre)} por tipo, en el periodo filtrado.</p>
+        ${vizDona(gGastosTipo, { aria: 'Gastos por tipo', centroSub: 'en gastos' })}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">📊 Lo que ganas vs. lo que gastas</h3>
+        <p class="viz-sub">Por sucursal, en la misma escala: ganado (vendido − costo) frente a gastos.</p>
+        ${vizDobleBarra(gDoble)}
+      </div>
+      <div class="card viz-card">
+        <h3 class="viz-titulo">🏁 Cuánto te queda por sucursal</h3>
+        <p class="viz-sub">Después de gastos. Verde ▲ a la derecha: ganas. Rojo ▼ a la izquierda: vas en negativo.</p>
+        ${vizDivergente(gQueda)}
+      </div>
+    </div>
+
     <p class="field-label" style="margin-bottom:10px;">Comparativo por sucursal (mismo periodo filtrado)</p>
     <div class="table-wrap"><table class="dtable">
       <thead><tr><th>Sucursal</th><th>Vendido</th><th>Ganado</th><th>Gastos</th><th>Te queda</th></tr></thead>
