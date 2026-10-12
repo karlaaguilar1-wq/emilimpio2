@@ -144,6 +144,8 @@
   .btn-ghost { background: var(--surface); color: var(--ink-soft); border-color: var(--line); }
   .btn-ghost:not(:disabled):hover { background: var(--line-soft); border-color: var(--line); }
   .btn-danger-text { color: var(--red); font-weight: 600; background: none; border: none; font-size: 12.5px; }
+  .nomina-dia { width:32px; height:32px; border-radius:50%; border:1.5px solid var(--line); background:var(--card, #fff); color:var(--muted); font-size:12px; font-weight:700; cursor:pointer; padding:0; }
+  .nomina-dia.on { background:var(--navy); border-color:var(--navy); color:#fff; }
   .btn-link { color: var(--navy-light); font-weight: 600; background: none; border: none; font-size: 12.5px; }
   .btn-sm { padding: 6px 12px; font-size: 12px; }
   .btn-icon { width: 38px; height: 38px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 17px; font-weight: 600; color: var(--ink); }
@@ -537,8 +539,8 @@ const TABLAS_SUPABASE = {
   },
   trabajadores: {
     tabla: 'trabajadores',
-    aFila: (t) => ({ id: t.id, sucursal_id: t.sucursalId, nombre: t.nombre, pago_por_dia: t.pagoPorDia }),
-    deFila: (f) => ({ id: f.id, sucursalId: f.sucursal_id, nombre: f.nombre, pagoPorDia: Number(f.pago_por_dia) || 0 }),
+    aFila: (t) => ({ id: t.id, sucursal_id: t.sucursalId, nombre: t.nombre, pago_por_dia: t.pagoPorDia, dias_semana: diasSemanaATexto(t.diasSemana) }),
+    deFila: (f) => ({ id: f.id, sucursalId: f.sucursal_id, nombre: f.nombre, pagoPorDia: Number(f.pago_por_dia) || 0, diasSemana: diasSemanaDeTexto(f.dias_semana) }),
   },
   retiros: {
     tabla: 'retiros',
@@ -753,6 +755,7 @@ async function traerTablaPaginada(conv, desdeFechaISO) {
 let realtimeSuscrito = false;
 let hidratando = false;
 let ultimaHidratacionMs = 0;
+let hidratacionExitosa = false;
 async function hidratarDesdeSupabase(opciones) {
   if (!SUPABASE_ACTIVO || !sb || hidratando) return;
   hidratando = true;
@@ -799,9 +802,11 @@ async function hidratarDesdeSupabase(opciones) {
     }
     UI.syncEstado = huboExito ? 'ok' : 'sin_conexion';
     ultimaHidratacionMs = Date.now();
+    if (huboExito) hidratacionExitosa = true;
   } finally {
     hidratando = false;
   }
+  if (huboExito) generarNominaAutomatica();
   if (ligero) {
     if (UI.session && !hayEntradaActivaDelUsuario()) renderPreservandoScroll();
   } else {
@@ -871,7 +876,7 @@ if (SUPABASE_ACTIVO) {
   // Refresco automático desde el servidor (ver refrescarDesdeServidor).
   window.addEventListener('online', refrescarDesdeServidor);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refrescarDesdeServidor(); });
-  setInterval(() => { if (!document.hidden) refrescarDesdeServidor(); }, 60000);
+  setInterval(() => { if (!document.hidden) { generarNominaAutomatica(); refrescarDesdeServidor(); } }, 60000);
 }
 
 
@@ -1413,6 +1418,7 @@ async function h_login(e) {
     save('sucursal_actual', match.sucursalId);
   }
   UI.view = match.rol === 'OWNER' ? 'dashboard' : 'venta';
+  generarNominaAutomatica();
   render();
 }
 
@@ -3537,6 +3543,40 @@ function h_guardarGasto() {
  * ese mes (28, 29, 30 o 31) y crea (o actualiza, si ya existía) un gasto
  * fijo de tipo "Sueldos/Nomina" para esa sucursal y ese mes exacto.
  * ------------------------------------------------------------------- */
+/* Días de la semana en que trabaja cada persona: números 0=domingo … 6=sábado (como JS getDay()).
+ * Si no se marcó nada, trabaja los 7 días. En la base se guarda como texto "0,6" (null = todos). */
+const TODOS_LOS_DIAS = [0, 1, 2, 3, 4, 5, 6];
+const NOMBRES_DIA_CORTO = { 1: 'L', 2: 'M', 3: 'X', 4: 'J', 5: 'V', 6: 'S', 0: 'D' };
+const NOMBRES_DIA_LARGO = { 1: 'Lunes', 2: 'Martes', 3: 'Miércoles', 4: 'Jueves', 5: 'Viernes', 6: 'Sábado', 0: 'Domingo' };
+function diasSemanaDeTexto(txt) {
+  if (txt === null || txt === undefined || txt === '') return TODOS_LOS_DIAS.slice();
+  const lista = String(txt).split(',').map((x) => Number(x.trim())).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6);
+  return lista.length ? Array.from(new Set(lista)).sort() : TODOS_LOS_DIAS.slice();
+}
+function diasSemanaATexto(arr) {
+  const lista = Array.isArray(arr) ? Array.from(new Set(arr)).filter((n) => n >= 0 && n <= 6).sort() : TODOS_LOS_DIAS;
+  return lista.length === 7 ? null : lista.join(',');
+}
+/** Cuántos días de ese mes (YYYY-MM) cae en alguno de los días de la semana marcados. */
+function diasTrabajadosEnMes(claveMes, diasSemana) {
+  const dias = diasDelMes(claveMes);
+  const partes = String(claveMes || '').split('-').map(Number);
+  const anio = partes[0], mes = partes[1];
+  const permitidos = new Set(Array.isArray(diasSemana) && diasSemana.length ? diasSemana : TODOS_LOS_DIAS);
+  let n = 0;
+  for (let d = 1; d <= dias; d++) if (permitidos.has(new Date(anio, mes - 1, d).getDay())) n++;
+  return n;
+}
+function claveMesActual() {
+  const h = new Date();
+  return h.getFullYear() + '-' + String(h.getMonth() + 1).padStart(2, '0');
+}
+function textoDiasSemana(arr) {
+  const d = diasSemanaDeTexto(Array.isArray(arr) ? arr.join(',') : null);
+  if (d.length === 7) return 'todos los días';
+  const orden = [1, 2, 3, 4, 5, 6, 0].filter((x) => d.includes(x));
+  return orden.map((x) => NOMBRES_DIA_LARGO[x]).join(', ');
+}
 function diasDelMes(claveMes) {
   const partes = String(claveMes || '').split('-').map(Number);
   const anio = partes[0], mes = partes[1];
@@ -3554,7 +3594,7 @@ function h_abrirNomina() {
   UI.gastos.nomina = {
     open: true,
     sucursalId: (UI.gastos.filtroSucursal !== 'todas' ? UI.gastos.filtroSucursal : (DB.sucursales[0] ? DB.sucursales[0].id : null)),
-    mes: new Date().toISOString().slice(0, 7),
+    mes: claveMesActual(),
   };
   refreshModalRoot();
 }
@@ -3564,12 +3604,23 @@ function h_nominaMes(v) { UI.gastos.nomina.mes = v; refreshModalRoot(); }
 function h_nominaAgregarTrabajador() {
   const sucursalId = UI.gastos.nomina.sucursalId;
   if (!sucursalId) return;
-  db('trabajadores', (list) => [...list, { id: genId('trab'), sucursalId, nombre: '', pagoPorDia: 0 }]);
+  db('trabajadores', (list) => [...list, { id: genId('trab'), sucursalId, nombre: '', pagoPorDia: 0, diasSemana: TODOS_LOS_DIAS.slice() }]);
   refreshModalRoot();
 }
 function h_nominaQuitarTrabajador(id) {
   if (!confirm('¿Quitar a este trabajador de la nómina de la sucursal?')) return;
   db('trabajadores', (list) => list.filter((t) => t.id !== id));
+  refreshModalRoot();
+}
+function h_nominaToggleDia(id, dia) {
+  const d = Number(dia);
+  db('trabajadores', (list) => list.map((t) => {
+    if (t.id !== id) return t;
+    const actuales = diasSemanaDeTexto(Array.isArray(t.diasSemana) ? t.diasSemana.join(',') : null);
+    const nuevos = actuales.includes(d) ? actuales.filter((x) => x !== d) : [...actuales, d];
+    // No se permite dejarlo sin ningún día: volvería a "todos" sin que se note
+    return { ...t, diasSemana: nuevos.length ? nuevos.sort() : actuales };
+  }));
   refreshModalRoot();
 }
 function h_nominaEditarNombre(id, valor) {
@@ -3581,52 +3632,91 @@ function h_nominaEditarPago(id, valor) {
   const cont = document.getElementById('nomina-resumen');
   if (cont) cont.innerHTML = renderNominaResumen();
 }
-function h_generarNomina() {
-  const n = UI.gastos.nomina;
-  const suc = DB.sucursales.find((s) => s.id === n.sucursalId);
-  if (!suc || !n.mes) return;
-  const trabajadores = DB.trabajadores.filter((t) => t.sucursalId === suc.id);
-  if (!trabajadores.length) return;
-  const dias = diasDelMes(n.mes);
-  const totalExacto = trabajadores.reduce((s, t) => s + (Number(t.pagoPorDia) || 0) * dias, 0);
-  const total = Math.round(totalExacto);
-  const detalle = trabajadores.map((t) => `${t.nombre || 'Sin nombre'}: ${formatoMoneda(t.pagoPorDia)}/día × ${dias} días = ${formatoMoneda(t.pagoPorDia * dias)}`).join('\n');
-  const existente = DB.gastos.find((g) => g.origenNomina && g.sucursalId === suc.id && g.nominaClaveMes === n.mes);
+/** Calcula la nómina de una sucursal para un mes: por cada trabajador, pago/día × los días de ese mes que le tocan. */
+function calcularNominaSucursal(sucursalId, mes) {
+  const trabajadores = DB.trabajadores.filter((t) => t.sucursalId === sucursalId);
+  const filas = trabajadores.map((t) => {
+    const dias = diasTrabajadosEnMes(mes, t.diasSemana);
+    const pago = Number(t.pagoPorDia) || 0;
+    return { trabajador: t, dias, pago, subtotal: pago * dias };
+  });
+  const total = Math.round(filas.reduce((s, f) => s + f.subtotal, 0));
+  return { filas, total };
+}
+/** Crea o actualiza el gasto de nómina de esa sucursal y mes. Devuelve el gasto, o null si no hay nada que pagar. */
+function guardarGastoNomina(suc, mes, automatica) {
+  const { filas, total } = calcularNominaSucursal(suc.id, mes);
+  if (!filas.length || total <= 0) return null;
+  const detalle = (automatica ? 'Generada automáticamente\n' : '') + filas.map((f) => {
+    const cuando = diasSemanaDeTexto(Array.isArray(f.trabajador.diasSemana) ? f.trabajador.diasSemana.join(',') : null).length === 7
+      ? '' : ' (' + textoDiasSemana(f.trabajador.diasSemana) + ')';
+    return `${f.trabajador.nombre || 'Sin nombre'}${cuando}: ${formatoMoneda(f.pago)}/día × ${f.dias} días = ${formatoMoneda(f.subtotal)}`;
+  }).join('\n');
+  const existente = DB.gastos.find((g) => g.origenNomina && g.sucursalId === suc.id && g.nominaClaveMes === mes);
   const gasto = {
-    id: existente ? existente.id : genId('gasto'),
-    fecha: existente ? existente.fecha : (n.mes + '-01'),
+    // Id fijo por sucursal+mes: si dos aparatos la generan a la vez, se unen en un solo gasto (no se duplica)
+    id: existente ? existente.id : 'gasto_nomina_' + suc.id + '_' + mes,
+    fecha: existente ? existente.fecha : (mes + '-01'),
     sucursalId: suc.id, sucursalNombre: suc.nombre,
     tipo: 'Sueldos/Nomina',
-    concepto: 'Nómina de ' + nombreMesLegible(n.mes) + ' (' + trabajadores.length + ' trabajador' + (trabajadores.length > 1 ? 'es' : '') + ')',
+    concepto: 'Nómina de ' + nombreMesLegible(mes) + ' (' + filas.length + ' trabajador' + (filas.length > 1 ? 'es' : '') + ')',
     monto: total,
     nota: detalle,
     esFijo: true,
     origenNomina: true,
-    nominaClaveMes: n.mes,
+    nominaClaveMes: mes,
   };
   db('gastos', (list) => {
     const existe = list.some((g) => g.id === gasto.id);
     return existe ? list.map((g) => g.id === gasto.id ? gasto : g) : [gasto, ...list];
   });
+  return { gasto, existente: !!existente };
+}
+function h_generarNomina() {
+  const n = UI.gastos.nomina;
+  const suc = DB.sucursales.find((s) => s.id === n.sucursalId);
+  if (!suc || !n.mes) return;
+  const r = guardarGastoNomina(suc, n.mes, false);
+  if (!r) return;
   UI.gastos.nomina.open = false;
-  UI.gastos.mensaje = (existente ? 'Se actualizó' : 'Se generó') + ' el gasto de nómina de ' + nombreMesLegible(n.mes) + ' para ' + suc.nombre + ': ' + formatoMoneda(total) + '.';
+  UI.gastos.mensaje = (r.existente ? 'Se actualizó' : 'Se generó') + ' el gasto de nómina de ' + nombreMesLegible(n.mes) + ' para ' + suc.nombre + ': ' + formatoMoneda(r.gasto.monto) + '.';
   render();
   setTimeout(() => { UI.gastos.mensaje = ''; renderPreservandoScroll(); }, 8000);
+}
+
+/** Nómina automática: el día 1 (la primera vez que alguien abre el sistema en el mes nuevo) se crea el gasto de
+ *  nómina del mes completo para cada sucursal que tenga trabajadores y todavía no lo tenga. Nunca pisa uno ya
+ *  existente (ni uno hecho a mano): para corregirlo se usa el botón de Nómina por sucursal. */
+let nominaAutoEnCurso = false;
+function generarNominaAutomatica() {
+  if (!UI.session || nominaAutoEnCurso) return 0;
+  // Con servidor, solo después de haber traído sus datos (así se sabe si el gasto de este mes ya existe)
+  if (SUPABASE_ACTIVO && sb && !hidratacionExitosa) return 0;
+  nominaAutoEnCurso = true;
+  let creados = 0;
+  try {
+    const mes = claveMesActual();
+    DB.sucursales.forEach((suc) => {
+      const yaHay = DB.gastos.some((g) => g.origenNomina && g.sucursalId === suc.id && g.nominaClaveMes === mes);
+      if (yaHay) return;
+      if (guardarGastoNomina(suc, mes, true)) creados++;
+    });
+  } finally { nominaAutoEnCurso = false; }
+  return creados;
 }
 function renderNominaResumen() {
   const n = UI.gastos.nomina;
   const suc = DB.sucursales.find((s) => s.id === n.sucursalId);
-  const trabajadores = suc ? DB.trabajadores.filter((t) => t.sucursalId === suc.id) : [];
-  if (!trabajadores.length || !n.mes) return '';
-  const dias = diasDelMes(n.mes);
-  const total = Math.round(trabajadores.reduce((s, t) => s + (Number(t.pagoPorDia) || 0) * dias, 0));
-  const yaExiste = DB.gastos.some((g) => g.origenNomina && g.sucursalId === (suc ? suc.id : null) && g.nominaClaveMes === n.mes);
+  if (!suc || !n.mes) return '';
+  const { filas, total } = calcularNominaSucursal(suc.id, n.mes);
+  if (!filas.length) return '';
+  const yaExiste = DB.gastos.some((g) => g.origenNomina && g.sucursalId === suc.id && g.nominaClaveMes === n.mes);
   return `
     <div class="card" style="padding:12px 14px;">
-      <p style="font-size:11.5px;color:var(--muted);margin:0 0 6px;">${escapeHtml(nombreMesLegible(n.mes))} tiene <b style="color:var(--ink);">${dias} días</b></p>
-      ${trabajadores.map((t) => `<p style="font-size:12.5px;margin:2px 0;">${escapeHtml(t.nombre || 'Sin nombre')}: ${formatoMoneda(t.pagoPorDia)}/día × ${dias} días = <b>${formatoMoneda(t.pagoPorDia * dias)}</b></p>`).join('')}
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 6px;">${escapeHtml(nombreMesLegible(n.mes))} tiene <b style="color:var(--ink);">${diasDelMes(n.mes)} días</b></p>
+      ${filas.map((f) => `<p style="font-size:12.5px;margin:2px 0;">${escapeHtml(f.trabajador.nombre || 'Sin nombre')}: ${formatoMoneda(f.pago)}/día × ${f.dias} días <span style="color:var(--muted);font-size:11px;">(${escapeHtml(textoDiasSemana(f.trabajador.diasSemana))})</span> = <b>${formatoMoneda(f.subtotal)}</b></p>`).join('')}
       <p style="font-weight:800;font-size:15px;color:var(--navy);margin:10px 0 0;border-top:1px solid var(--line);padding-top:8px;">Total del mes: ${formatoMoneda(total)}</p>
-      ${yaExiste ? `<p style="font-size:11px;color:var(--navy-light);margin:6px 0 0;">Ya existe un gasto de nómina generado para este mes en esta sucursal — al generar de nuevo se actualiza, no se duplica.</p>` : ''}
+      ${yaExiste ? `<p style="font-size:11px;color:var(--navy-light);margin:6px 0 0;">Ya existe un gasto de nómina para este mes en esta sucursal — al generar de nuevo se actualiza, no se duplica.</p>` : ''}
     </div>
   `;
 }
@@ -3637,7 +3727,7 @@ function renderNominaModal() {
   return modalWrap(`
     <div class="modal-pad">
       <h3>👷 Nómina por sucursal</h3>
-      <p style="color:var(--muted);font-size:12.5px;margin-top:2px;">Registra cuánto le pagas por día a cada trabajador de la sucursal; el sistema calcula solo el total del mes según si tiene 28, 30 o 31 días.</p>
+      <p style="color:var(--muted);font-size:12.5px;margin-top:2px;">Registra cuánto le pagas por día a cada trabajador y qué días de la semana trabaja (por ejemplo, solo sábado y domingo). El sistema cuenta los días reales del mes y calcula el total. El día 1 de cada mes crea solo el gasto de nómina de todas las sucursales.</p>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;">
         <label class="field"><span class="field-label">Sucursal</span>
@@ -3652,15 +3742,24 @@ function renderNominaModal() {
 
       <p class="field-label" style="margin-top:18px;margin-bottom:8px;">Trabajadores en ${escapeHtml(suc ? suc.nombre : '')}${trabajadores.length ? ' (' + trabajadores.length + ')' : ''}</p>
       <div style="display:flex;flex-direction:column;gap:8px;">
-        ${trabajadores.map((t) => `
-          <div style="display:flex;gap:8px;align-items:center;">
-            <input class="input" style="flex:1;" placeholder="Nombre del trabajador" value="${escapeHtml(t.nombre)}" onchange="h_nominaEditarNombre('${t.id}', this.value)">
-            <div style="position:relative;width:130px;flex-shrink:0;">
-              <input type="number" min="0" step="0.5" class="input" style="text-align:right;padding-right:40px;" value="${t.pagoPorDia}" onchange="h_nominaEditarPago('${t.id}', this.value)">
-              <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--muted);pointer-events:none;">/día</span>
+        ${trabajadores.map((t) => {
+          const dsel = diasSemanaDeTexto(Array.isArray(t.diasSemana) ? t.diasSemana.join(',') : null);
+          return `
+          <div style="border:1px solid var(--line);border-radius:12px;padding:10px;">
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input class="input" style="flex:1;" placeholder="Nombre del trabajador" value="${escapeHtml(t.nombre)}" onchange="h_nominaEditarNombre('${t.id}', this.value)">
+              <div style="position:relative;width:130px;flex-shrink:0;">
+                <input type="number" min="0" step="0.5" class="input" style="text-align:right;padding-right:40px;" value="${t.pagoPorDia}" onchange="h_nominaEditarPago('${t.id}', this.value)">
+                <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--muted);pointer-events:none;">/día</span>
+              </div>
+              <button style="border:none;background:none;color:#CBD5E1;font-size:18px;line-height:1;flex-shrink:0;" data-action="nominaQuitarTrabajador" data-id="${t.id}" title="Quitar">×</button>
             </div>
-            <button style="border:none;background:none;color:#CBD5E1;font-size:18px;line-height:1;flex-shrink:0;" data-action="nominaQuitarTrabajador" data-id="${t.id}" title="Quitar">×</button>
-          </div>`).join('') || `<p style="color:var(--muted);font-size:12.5px;margin:0;">Aún no tienes trabajadores registrados en esta sucursal.</p>`}
+            <div style="display:flex;gap:5px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+              <span style="font-size:11px;color:var(--muted);margin-right:2px;">Trabaja:</span>
+              ${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button type="button" class="nomina-dia ${dsel.includes(d) ? 'on' : ''}" data-action="nominaToggleDia" data-id="${t.id}" data-arg="${d}" title="${NOMBRES_DIA_LARGO[d]}" aria-pressed="${dsel.includes(d)}">${NOMBRES_DIA_CORTO[d]}</button>`).join('')}
+            </div>
+          </div>`;
+        }).join('') || `<p style="color:var(--muted);font-size:12.5px;margin:0;">Aún no tienes trabajadores registrados en esta sucursal.</p>`}
       </div>
       <button class="btn btn-ghost" style="margin-top:10px;" data-action="nominaAgregarTrabajador">+ Agregar trabajador</button>
 
