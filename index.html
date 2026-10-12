@@ -438,7 +438,7 @@ const UI = {
   usuarios: { formUsuarioOpen: false, editandoUsuario: null, formSucursalOpen: false, verContrasenaId: null },
   tickets: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', busquedaFolio: '', detalleId: null, editando: null },
   reportes: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', detalleProductosAbierto: false },
-  utilidades: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '' },
+  utilidades: { filtroSucursal: 'todas', modoTiempo: '', fechaDia: '', fechaSemana: '', fechaMes: '', detalleProductosAbierto: false },
 };
 
 function persist(key) {
@@ -3864,7 +3864,8 @@ function calcularUtilidad(ventasSet, gastosSet) {
   const costoTotal = ventasSet.reduce((s, v) => s + costoDeVenta(v), 0);
   const gastosTotal = gastosSet.reduce((s, g) => s + g.monto, 0);
 
-  const utilidadNeta = ventasTotales - costoTotal - gastosTotal;
+  const gananciaBruta = ventasTotales - costoTotal;
+  const utilidadNeta = gananciaBruta - gastosTotal;
   const margenBruto = ventasTotales > 0 ? ((ventasTotales - costoTotal) / ventasTotales) * 100 : 0;
   const margenNeto = ventasTotales > 0 ? (utilidadNeta / ventasTotales) * 100 : 0;
 
@@ -3882,7 +3883,7 @@ function calcularUtilidad(ventasSet, gastosSet) {
     return { nombre: p.nombre, costo: p.costo, precioPromedio, utilidadLitro, utilidadTotal: utilidadLitro * p.litros };
   }).sort((a, b) => b.utilidadTotal - a.utilidadTotal);
 
-  return { ventasTotales, costoTotal, gastosTotal, utilidadNeta, margenBruto, margenNeto, detalle, numVentas: ventasSet.length };
+  return { ventasTotales, costoTotal, gastosTotal, gananciaBruta, utilidadNeta, margenBruto, margenNeto, detalle, numVentas: ventasSet.length };
 }
 
 function calcularUtilidadFiltrada(f) {
@@ -3897,6 +3898,11 @@ function miniStat(label, value, variant) {
     <p class="field-label">${label}</p>
     <p style="margin-top:2px;font-size:16px;font-weight:800;color:${color};">${value}</p>
   </div>`;
+}
+
+function h_toggleDetalleUtilidad() {
+  UI.utilidades.detalleProductosAbierto = !UI.utilidades.detalleProductosAbierto;
+  render();
 }
 
 function renderUtilidades() {
@@ -3922,19 +3928,25 @@ function renderUtilidadesBody() {
   return `
     <div class="card" style="padding:18px;margin-bottom:22px;">
       <h3 style="margin:0 0 12px;">${escapeHtml(sucNombre)}</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-        ${miniStat('Ventas totales', formatoMoneda(calc.ventasTotales), 'navy')}
+      <div id="balance-resumen" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+        ${miniStat('Has vendido', formatoMoneda(calc.ventasTotales), 'navy')}
         ${miniStat('Costo total producto', formatoMoneda(calc.costoTotal), 'navy')}
+        ${miniStat('Has ganado (vendido − costo)', formatoMoneda(calc.gananciaBruta), calc.gananciaBruta >= 0 ? 'emerald' : 'red')}
         ${miniStat('Gastos (periodo filtrado)', formatoMoneda(calc.gastosTotal), 'red')}
-        ${miniStat('Utilidad neta', formatoMoneda(calc.utilidadNeta), calc.utilidadNeta >= 0 ? 'emerald' : 'red')}
+        <div style="grid-column:1 / -1;background:var(--ground);border-radius:12px;padding:10px 12px;">
+          <p class="field-label">${calc.utilidadNeta >= 0 ? 'Te queda (después de gastos)' : 'Vas en negativo (después de gastos)'}</p>
+          <p id="balance-final" style="margin-top:2px;font-size:20px;font-weight:900;color:${calc.utilidadNeta >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${formatoMoneda(calc.utilidadNeta)}</p>
+        </div>
       </div>
       <div style="display:flex;gap:18px;margin-bottom:14px;font-size:13px;">
         <p style="margin:0;">Margen bruto: <b style="color:var(--navy);">${calc.margenBruto.toFixed(1)}%</b></p>
         <p style="margin:0;">Margen neto: <b style="color:${calc.margenNeto >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${calc.margenNeto.toFixed(1)}%</b></p>
         <p style="margin:0;color:var(--ink-soft);">${calc.numVentas} tickets</p>
       </div>
-      <p class="field-label" style="margin-bottom:8px;">Detalle por producto</p>
-      <div class="table-wrap"><table class="dtable" style="font-size:12px;">
+      <button class="btn-link" id="btn-detalle-utilidad" style="margin:0 0 8px;padding:8px 2px;font-size:13px;" data-action="toggleDetalleUtilidad">
+        ${f.detalleProductosAbierto ? '▲ Ocultar detalle por producto' : `▼ Ver detalle por producto (${calc.detalle.length})`}
+      </button>
+      ${f.detalleProductosAbierto ? `<div class="table-wrap"><table class="dtable" style="font-size:12px;">
         <thead><tr><th>Producto</th><th>Costo/L</th><th>Precio prom.</th><th>Utilidad/L</th><th>Utilidad total</th></tr></thead>
         <tbody>
           ${calc.detalle.map((d) => `
@@ -3946,19 +3958,20 @@ function renderUtilidadesBody() {
               <td style="font-weight:700;">${formatoMoneda(d.utilidadTotal)}</td>
             </tr>`).join('') || `<tr><td colspan="5" class="empty-row">Sin ventas registradas con estos filtros.</td></tr>`}
         </tbody>
-      </table></div>
+      </table></div>` : ''}
     </div>
     <p class="field-label" style="margin-bottom:10px;">Comparativo por sucursal (mismo periodo filtrado)</p>
     <div class="table-wrap"><table class="dtable">
-      <thead><tr><th>Sucursal</th><th>Ventas</th><th>Gastos</th><th>Utilidad neta</th></tr></thead>
+      <thead><tr><th>Sucursal</th><th>Vendido</th><th>Ganado</th><th>Gastos</th><th>Te queda</th></tr></thead>
       <tbody>
         ${comparativo.map(({ sucursal, calc: c }) => `
           <tr>
             <td style="font-weight:700;color:var(--navy);">${escapeHtml(sucursal.nombre)}</td>
             <td>${formatoMoneda(c.ventasTotales)}</td>
+            <td style="font-weight:600;">${formatoMoneda(c.gananciaBruta)}</td>
             <td style="color:var(--red);font-weight:600;">${formatoMoneda(c.gastosTotal)}</td>
             <td style="font-weight:800;color:${c.utilidadNeta >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${formatoMoneda(c.utilidadNeta)}</td>
-          </tr>`).join('') || `<tr><td colspan="4" class="empty-row">No hay sucursales registradas.</td></tr>`}
+          </tr>`).join('') || `<tr><td colspan="5" class="empty-row">No hay sucursales registradas.</td></tr>`}
       </tbody>
     </table></div>
   `;
