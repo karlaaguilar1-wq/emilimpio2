@@ -1157,6 +1157,10 @@ function vistaPermitida(view, rol) {
   return item ? item.roles.includes(rol) : true;
 }
 /** Rol efectivo: el Dueño puede usar "Ver como" para probar la vista de otro rol sin cerrar sesión. */
+/** Los vendedores no ven cuánto stock hay (solo si un producto está agotado); administración y dueño sí. */
+function verStock() { return efectivoRol() !== 'SELLER'; }
+/** Lo que se muestra cuando un producto no se puede vender: el vendedor ve "No disponible" (sin hablar de stock). */
+function textoAgotado() { return verStock() ? 'Sin stock' : 'No disponible'; }
 function efectivoRol() {
   if (!UI.session) return null;
   if (UI.session.role === 'OWNER' && UI.viewAsRole) return UI.viewAsRole;
@@ -1510,7 +1514,7 @@ function renderVentaAccesoRapido(suc) {
           ${p.foto ? `<img src="${p.foto}" style="width:26px;height:26px;border-radius:7px;object-fit:cover;flex-shrink:0;" alt="">` : `<span style="font-size:18px;flex-shrink:0;">${TIPO_ICON[p.tipo]}</span>`}
           <div style="min-width:0;">
             <p class="prod-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">${escapeHtml(p.nombre)}</p>
-            <p style="font-size:10.5px;color:${sinStock ? 'var(--red)' : 'var(--muted)'};margin:2px 0 0;">${sinStock ? 'Sin stock' : formatoMoneda(p.precioMenudeo) + ' /L'}</p>
+            <p style="font-size:10.5px;color:${sinStock ? 'var(--red)' : 'var(--muted)'};margin:2px 0 0;">${sinStock ? textoAgotado() : formatoMoneda(p.precioMenudeo) + ' /L'}</p>
           </div>
         </button>`;
       }).join('')}
@@ -1583,7 +1587,7 @@ function renderVentaDropdown() {
             <p style="font-size:11px;color:var(--muted);margin:0;">${precioTxt}</p>
           </div>
         </div>
-        <span class="badge ${sinStock ? 'badge-red' : (stock < 10 ? 'badge-red' : 'badge-emerald')}" style="flex-shrink:0;">${sinStock ? 'Sin stock' : stock + (p.piezas ? ' pzas' : ' L')}</span>
+        ${sinStock ? `<span class="badge badge-red" style="flex-shrink:0;">${textoAgotado()}</span>` : (verStock() ? `<span class="badge ${stock < 10 ? 'badge-red' : 'badge-emerald'}" style="flex-shrink:0;">${stock + (p.piezas ? ' pzas' : ' L')}</span>` : '')}
       </div>`;
     }).join('')}
   </div>`;
@@ -1599,7 +1603,7 @@ function renderProductCard(p, suc) {
     <button class="prod-card" ${sinStock ? 'disabled' : ''} data-action="abrirQty" data-id="${p.id}">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;">
         ${p.foto ? `<img src="${p.foto}" class="prod-photo" alt="">` : `<span style="font-size:22px;">${TIPO_ICON[p.tipo]}</span>`}
-        <span class="badge ${stockBajo ? 'badge-red' : 'badge-gray'}">${stock} ${p.piezas ? 'pzas' : 'L'}</span>
+        ${verStock() ? `<span class="badge ${stockBajo ? 'badge-red' : 'badge-gray'}">${stock} ${p.piezas ? 'pzas' : 'L'}</span>` : ''}
       </div>
       <p class="prod-name">${escapeHtml(p.nombre)}</p>
       <div style="margin-top:7px;">
@@ -1609,7 +1613,7 @@ function renderProductCard(p, suc) {
              <p style="font-weight:700;font-size:11.5px;color:var(--emerald-dark);margin-top:1px;">${formatoMoneda(p.precioMayoreo)} /L mayoreo (5+ L)</p>`}
         ${owner ? `<p style="font-size:10.5px;color:var(--muted);margin-top:3px;">Costo: ${formatoMoneda(p.costo)}</p>` : ''}
       </div>
-      ${sinStock ? `<p style="font-size:10.5px;font-weight:700;color:var(--red);margin-top:6px;">Sin stock</p>` : ''}
+      ${sinStock ? `<p style="font-size:10.5px;font-weight:700;color:var(--red);margin-top:6px;">${textoAgotado()}</p>` : ''}
     </button>
   `;
 }
@@ -1658,6 +1662,7 @@ function h_toggleCatalogoVenta() {
 function h_abrirQty(id) {
   UI.venta.modalProducto = id;
   UI.venta.modalQty = 1;
+  UI.venta.modalTopado = false;
   UI.venta.dropdownVisible = false;
   const dd = document.getElementById('venta-dropdown');
   if (dd) dd.innerHTML = '';
@@ -1696,6 +1701,7 @@ function h_qtyInput(v) {
   const p = DB.productos.find((x) => x.id === UI.venta.modalProducto);
   const suc = sucursalActual();
   const max = suc ? getStock(suc.id, p.id) : 0;
+  UI.venta.modalTopado = Number(v) > Math.max(max, 0.5);
   UI.venta.modalQty = clampQty(v, max);
   syncQtyModal(false);
 }
@@ -1703,6 +1709,7 @@ function h_qtyStep(delta) {
   const p = DB.productos.find((x) => x.id === UI.venta.modalProducto);
   const suc = sucursalActual();
   const max = suc ? getStock(suc.id, p.id) : 0;
+  UI.venta.modalTopado = (UI.venta.modalQty + Number(delta)) > Math.max(max, 0.5);
   UI.venta.modalQty = clampQty(UI.venta.modalQty + Number(delta), max);
   syncQtyModal(true);
 }
@@ -1710,6 +1717,7 @@ function h_qtyQuick(v) {
   const p = DB.productos.find((x) => x.id === UI.venta.modalProducto);
   const suc = sucursalActual();
   const max = suc ? getStock(suc.id, p.id) : 0;
+  UI.venta.modalTopado = Number(v) > Math.max(max, 0.5);
   UI.venta.modalQty = clampQty(v, max);
   syncQtyModal(true);
 }
@@ -1719,6 +1727,8 @@ function syncQtyModal(updateInputValue) {
   const qty = UI.venta.modalQty;
   const unico = esPrecioUnico(p);
   const faltan = litrosParaMayoreo(p, qty);
+  const aviso = document.getElementById('qty-aviso');
+  if (aviso) aviso.textContent = UI.venta.modalTopado ? 'Esa cantidad no está disponible para vender.' : '';
   const hint = document.getElementById('qty-hint');
   if (hint) {
     hint.className = unico ? 'hint-unico' : (faltan > 0 ? 'hint-falta' : 'hint-ok');
@@ -2003,7 +2013,9 @@ function renderQtyModal() {
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px;">
         ${quick.map((v) => `<button class="qty-quick-btn ${v === qty ? 'active-quick' : ''}" data-arg="${v}" onclick="h_qtyQuick(${v})">${v} L</button>`).join('')}
       </div>
-      <p style="text-align:center;color:var(--muted);font-size:11.5px;margin-top:12px;">Stock disponible: ${max} ${p.piezas ? 'pzas' : 'L'}</p>
+      ${verStock()
+        ? `<p style="text-align:center;color:var(--muted);font-size:11.5px;margin-top:12px;">Stock disponible: ${max} ${p.piezas ? 'pzas' : 'L'}</p>`
+        : `<p id="qty-aviso" style="text-align:center;color:var(--red);font-size:11.5px;font-weight:600;margin:12px 0 0;min-height:16px;">${UI.venta.modalTopado ? 'Esa cantidad no está disponible para vender.' : ''}</p>`}
       <div style="display:flex;gap:10px;margin-top:18px;">
         <button class="btn btn-ghost" style="flex:1;" data-action="cerrarModal">Cancelar</button>
         <button class="btn btn-accent" style="flex:1;" data-action="agregarCarrito">Agregar al carrito</button>
