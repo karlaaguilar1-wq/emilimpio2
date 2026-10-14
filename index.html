@@ -3898,15 +3898,16 @@ function vizColumnas(items, opts) {
   if (!(max > 0)) return '<p class="viz-vacio">Sin datos en este periodo.</p>';
   const idxMax = items.findIndex((i) => i.value === max);
   const alto = 150 - 18; // alto útil de la zona de barras
-  return `<div class="viz-cols">${items.map((i, idx) => {
+  const gap = opts.gap !== undefined ? opts.gap : 6;
+  return `<div class="viz-cols" style="gap:${gap}px;">${items.map((i, idx) => {
     const h = Math.max((i.value / max) * (alto - 16), i.value > 0 ? 2 : 0);
     const esMax = idx === idxMax;
     return `<div class="viz-col" data-tip="${escapeHtml((i.tip || i.label) + ': ' + (opts.formatoTip || formatoMoneda)(i.value))}">
       ${esMax ? `<span class="viz-col-val" style="bottom:${h + 3}px;">${escapeHtml(formato(i.value))}</span>` : ''}
-      <div class="viz-col-barra" style="height:${h}px;background:${esMax ? VIZ_COLORES[0] : VIZ_GRIS_SUAVE};"></div>
+      <div class="viz-col-barra" style="height:${h}px;${opts.anchoBarra ? 'max-width:' + opts.anchoBarra + 'px;' : ''}background:${esMax ? VIZ_COLORES[0] : VIZ_GRIS_SUAVE};"></div>
     </div>`;
   }).join('')}</div>
-  <div class="viz-eje">${items.map((i) => `<span>${escapeHtml(i.label)}</span>`).join('')}</div>`;
+  <div class="viz-eje" style="gap:${gap}px;">${items.map((i) => `<span style="${opts.ejeChico ? 'font-size:10px;white-space:nowrap;overflow:visible;' : ''}">${escapeHtml(i.label)}</span>`).join('')}</div>`;
 }
 /** Barra apilada que suma 100%: items = [{label, value, color}] */
 function vizApilada(items, opts) {
@@ -4078,6 +4079,58 @@ function renderReportesBody() {
   if (sinMetodo > 0) gPago.push({ label: 'Sin método', value: sinMetodo, color: VIZ_OTROS });
   const NOMBRES_DIA_SEM = [[1, 'L', 'Lunes'], [2, 'M', 'Martes'], [3, 'X', 'Miércoles'], [4, 'J', 'Jueves'], [5, 'V', 'Viernes'], [6, 'S', 'Sábado'], [0, 'D', 'Domingo']];
   const gDiaSemana = NOMBRES_DIA_SEM.map(([n, corto, largo]) => ({ label: corto, tip: largo, value: ventasFiltradas.filter((v) => new Date(v.fecha).getDay() === n).reduce((a, v) => a + v.total, 0) }));
+  // Ventas día por día del mes: el mes del filtro "Mes" si está elegido; si no, el mes actual. Respeta la sucursal elegida.
+  const mesGrafica = (f.modoTiempo === 'mes' && f.fechaMes) ? f.fechaMes : claveMesActual();
+  const [anioG, mesG] = mesGrafica.split('-').map(Number);
+  const diasMesG = new Date(anioG, mesG, 0).getDate();
+  const ventasPorDiaMes = new Array(diasMesG + 1).fill(0);
+  DB.ventas.filter((v) => ventaActiva(v) && pasaFiltroSucursal(v.sucursalId, f) && esMismoMesTexto(v.fecha, mesGrafica))
+    .forEach((v) => { ventasPorDiaMes[new Date(v.fecha).getDate()] += v.total; });
+  const NOMBRES_DIA_LARGO_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  const gDiasMes = [];
+  for (let d = 1; d <= diasMesG; d++) {
+    const fechaD = new Date(anioG, mesG - 1, d);
+    gDiasMes.push({ label: (d === 1 || d % 5 === 0) ? String(d) : '', tip: NOMBRES_DIA_LARGO_ES[fechaD.getDay()] + ' ' + d + ' de ' + nombreMesLegible(mesGrafica).split(' ')[0].toLowerCase(), value: ventasPorDiaMes[d] });
+  }
+  const totalMesG = ventasPorDiaMes.reduce((a, b) => a + b, 0);
+  const maxDiaG = Math.max(...gDiasMes.map((x) => x.value), 0);
+  const mejorDiaG = maxDiaG > 0 ? gDiasMes.find((x) => x.value === maxDiaG) : null;
+  const hoyG = new Date();
+  const esMesActualG = mesGrafica === claveMesActual();
+  const diasTranscurridosG = esMesActualG ? hoyG.getDate() : diasMesG;
+  const promedioDiaG = diasTranscurridosG > 0 ? totalMesG / diasTranscurridosG : 0;
+  const diasSinVentaG = gDiasMes.filter((x, i) => (i + 1) <= diasTranscurridosG && x.value === 0).length;
+  // Ventas mes por mes (últimos 12 meses, terminando en el mes actual). Respeta la sucursal elegida; ignora Día/Semana/Mes.
+  const NOMBRES_MES_CORTO = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const ventasSucursalTodas = DB.ventas.filter((v) => ventaActiva(v) && pasaFiltroSucursal(v.sucursalId, f));
+  const mesesG = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(hoyG.getFullYear(), hoyG.getMonth() - i, 1);
+    mesesG.push({ anio: d.getFullYear(), mes: d.getMonth(), clave: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), total: 0 });
+  }
+  const porClaveMes = Object.fromEntries(mesesG.map((m) => [m.clave, m]));
+  ventasSucursalTodas.forEach((v) => {
+    const d = new Date(v.fecha);
+    const m = porClaveMes[d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')];
+    if (m) m.total += v.total;
+  });
+  const claveActualG = claveMesActual();
+  const gMeses = mesesG.map((m) => ({
+    label: NOMBRES_MES_CORTO[m.mes],
+    tip: nombreMesLegible(m.clave) + (m.clave === claveActualG ? ' (en curso)' : ''),
+    value: m.total,
+  }));
+  const mesesConVenta = mesesG.filter((m) => m.total > 0);
+  const mejorMesG = mesesConVenta.length ? mesesConVenta.reduce((a, b) => (b.total > a.total ? b : a)) : null;
+  const mesesCompletosConVenta = mesesConVenta.filter((m) => m.clave !== claveActualG);
+  const promedioMensualG = mesesCompletosConVenta.length ? mesesCompletosConVenta.reduce((a, m) => a + m.total, 0) / mesesCompletosConVenta.length : 0;
+  // Este mes vs. el mes pasado, hasta el mismo día del mes (comparación justa mientras el mes sigue en curso)
+  const diaHoyG = hoyG.getDate();
+  const mesPasadoG = new Date(hoyG.getFullYear(), hoyG.getMonth() - 1, 1);
+  const claveMesPasadoG = mesPasadoG.getFullYear() + '-' + String(mesPasadoG.getMonth() + 1).padStart(2, '0');
+  const esteMesHastaHoyG = ventasSucursalTodas.filter((v) => esMismoMesTexto(v.fecha, claveActualG)).reduce((a, v) => a + v.total, 0);
+  const mesPasadoMismoPeriodoG = ventasSucursalTodas.filter((v) => esMismoMesTexto(v.fecha, claveMesPasadoG) && new Date(v.fecha).getDate() <= diaHoyG).reduce((a, v) => a + v.total, 0);
+  const cambioPctG = mesPasadoMismoPeriodoG > 0 ? ((esteMesHastaHoyG - mesPasadoMismoPeriodoG) / mesPasadoMismoPeriodoG) * 100 : null;
   const porHora = new Array(24).fill(0);
   ventasFiltradas.forEach((v) => { porHora[new Date(v.fecha).getHours()] += v.total; });
   const horasConVenta = porHora.map((m, h) => (m > 0 ? h : -1)).filter((h) => h >= 0);
@@ -4093,6 +4146,30 @@ function renderReportesBody() {
       <div class="kpi"><div class="kpi-label">Stock bajo</div><div class="kpi-value" style="color:var(--red);">${stockBajoCount}</div><div class="kpi-sub">productos con menos de 10 en ${escapeHtml(sucNombre)}</div></div>
     </div>
     <div class="viz-grid">
+      <div class="card viz-card" style="grid-column:1 / -1;">
+        <h3 class="viz-titulo">🗓️ Ventas día por día de ${escapeHtml(nombreMesLegible(mesGrafica))}</h3>
+        <p class="viz-sub">Cuánto se vendió cada día del mes en ${escapeHtml(sucNombre)}. El día más alto va resaltado; toca o pasa el mouse por una barra para ver el día y el monto. Para ver otro mes, usa "Ver por → Mes".</p>
+        ${vizColumnas(gDiasMes, { gap: 2, ejeChico: true, anchoBarra: 22 })}
+        ${mejorDiaG ? `<div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:12px;font-size:12.5px;color:var(--ink-soft);">
+          <span>🏆 Mejor día: <b style="color:var(--ink);">${escapeHtml(mejorDiaG.tip)}</b> con <b style="color:var(--ink);">${escapeHtml(formatoMoneda(mejorDiaG.value))}</b></span>
+          <span>Total del mes: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(totalMesG))}</b></span>
+          <span>Promedio por día: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(promedioDiaG))}</b></span>
+          ${diasSinVentaG > 0 ? `<span>Días sin ventas: <b style="color:var(--ink);">${diasSinVentaG}</b></span>` : ''}
+        </div>` : ''}
+      </div>
+      <div class="card viz-card" style="grid-column:1 / -1;">
+        <h3 class="viz-titulo">📈 Ventas mes por mes</h3>
+        <p class="viz-sub">Los últimos 12 meses (de ${escapeHtml(nombreMesLegible(mesesG[0].clave))} a ${escapeHtml(nombreMesLegible(mesesG[11].clave))}) en ${escapeHtml(sucNombre)}, para comparar un mes con otro. El mes más alto va resaltado. El mes actual aún está en curso, por eso puede verse más bajo.</p>
+        ${vizColumnas(gMeses, { gap: 8, anchoBarra: 34 })}
+        ${mejorMesG ? `<div style="display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:12px;font-size:12.5px;color:var(--ink-soft);">
+          <span>🏆 Mejor mes: <b style="color:var(--ink);">${escapeHtml(nombreMesLegible(mejorMesG.clave))}</b> con <b style="color:var(--ink);">${escapeHtml(formatoMoneda(mejorMesG.total))}</b></span>
+          ${promedioMensualG > 0 ? `<span>Promedio de meses completos: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(promedioMensualG))}</b></span>` : ''}
+        </div>
+        <div style="margin-top:10px;padding:10px 12px;background:var(--ground);border-radius:12px;font-size:12.5px;color:var(--ink-soft);">
+          Este mes, del 1 al ${diaHoyG}: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(esteMesHastaHoyG))}</b> · ${escapeHtml(nombreMesLegible(claveMesPasadoG).split(' ')[0])}, del 1 al ${diaHoyG}: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(mesPasadoMismoPeriodoG))}</b>
+          ${cambioPctG === null ? '' : ` · <b style="color:${cambioPctG >= 0 ? 'var(--emerald-dark)' : 'var(--red)'};">${cambioPctG >= 0 ? '▲ +' : '▼ '}${cambioPctG.toFixed(1)}%</b>`}
+        </div>` : ''}
+      </div>
       <div class="card viz-card">
         <h3 class="viz-titulo">🏪 Qué sucursal vende más</h3>
         <p class="viz-sub">Parte de las ventas totales que aporta cada sucursal en el periodo (todas las sucursales).</p>
