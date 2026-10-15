@@ -1113,6 +1113,22 @@ function getStock(sucursalId, productoId) {
   const it = DB.inventario.find((i) => i.sucursalId === sucursalId && i.productoId === productoId);
   return it ? it.stockLitros : 0;
 }
+/** Valor del inventario: a costo (lo que te costó) y a precio de venta de menudeo (lo que sacarías vendiéndolo todo).
+ *  sucursalId = null → todas las sucursales juntas. Solo cuenta productos que todavía existen. */
+function valorInventario(sucursalId) {
+  const porId = new Map(DB.productos.map((p) => [p.id, p]));
+  let costo = 0, venta = 0, unidades = 0;
+  DB.inventario.forEach((i) => {
+    if (sucursalId && i.sucursalId !== sucursalId) return;
+    const p = porId.get(i.productoId);
+    if (!p) return;
+    const q = Number(i.stockLitros) || 0;
+    costo += q * (Number(p.costo) || 0);
+    venta += q * (Number(p.precioMenudeo) || 0);
+    unidades += q;
+  });
+  return { costo, venta, ganancia: venta - costo, unidades };
+}
 function getStockTotal(productoId) {
   return DB.inventario.filter((i) => i.productoId === productoId).reduce((s, i) => s + i.stockLitros, 0);
 }
@@ -2473,13 +2489,17 @@ function renderInventarioTab() {
         <button class="btn btn-ghost" data-action="abrirHistorialRetiros">🕑 Historial de retiros</button>
         <button class="btn btn-ghost" data-action="abrirHistorialIngresos">🕑 Historial de ingresos</button>
       </div>
+      ${efectivoRol() === 'OWNER' ? (() => { const v = valorInventario(sucId); return `<div style="display:flex;flex-wrap:wrap;gap:8px 22px;margin:0 0 14px;padding:10px 14px;background:var(--ground);border-radius:12px;font-size:12.5px;color:var(--ink-soft);">
+        <span>Valor del inventario de ${escapeHtml(suc.nombre)} — a costo: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(v.costo))}</b></span>
+        <span>a precio de venta: <b style="color:var(--ink);">${escapeHtml(formatoMoneda(v.venta))}</b></span>
+      </div>`; })() : ''}
       <div class="table-wrap"><table class="dtable">
-        <thead><tr><th>Producto</th><th>Stock actual en ${escapeHtml(suc.nombre)}</th></tr></thead>
+        <thead><tr><th>Producto</th><th>Stock actual en ${escapeHtml(suc.nombre)}</th>${efectivoRol() === 'OWNER' ? '<th>Valor a costo</th>' : ''}</tr></thead>
         <tbody>
           ${DB.productos.map((p) => {
             const stock = getStock(sucId, p.id);
-            return `<tr><td style="font-weight:700;color:var(--navy);">${escapeHtml(p.nombre)}</td><td><span class="badge ${stock < 10 ? 'badge-red' : 'badge-emerald'}">${stock} ${p.piezas ? 'pzas' : 'L'}</span></td></tr>`;
-          }).join('') || `<tr><td colspan="2" class="empty-row">Primero agrega productos en la pestaña Productos.</td></tr>`}
+            return `<tr><td style="font-weight:700;color:var(--navy);">${escapeHtml(p.nombre)}</td><td><span class="badge ${stock < 10 ? 'badge-red' : 'badge-emerald'}">${stock} ${p.piezas ? 'pzas' : 'L'}</span></td>${efectivoRol() === 'OWNER' ? `<td>${formatoMoneda(stock * (Number(p.costo) || 0))}</td>` : ''}</tr>`;
+          }).join('') || `<tr><td colspan="${efectivoRol() === 'OWNER' ? 3 : 2}" class="empty-row">Primero agrega productos en la pestaña Productos.</td></tr>`}
         </tbody>
       </table></div>
     `) : ''}
@@ -4675,6 +4695,9 @@ function renderDashboardGlobal() {
   const totalHoy = ventasHoy.reduce((s, v) => s + v.total, 0);
   const totalMes = ventasMes.reduce((s, v) => s + v.total, 0);
   const stockBajoTotal = DB.productos.filter((p) => getStockTotal(p.id) < 10).length;
+  const invGlobal = valorInventario(null);
+  const invPorSuc = DB.sucursales.map((suc) => ({ suc, ...valorInventario(suc.id) }));
+  const gInvDona = vizAgruparOtras(invPorSuc.map((x) => ({ label: x.suc.nombre, value: x.costo, color: vizColorSucursal(x.suc.id) })));
 
   const porSucursal = DB.sucursales.map((suc) => {
     const ventasSucHoy = ventasDe(suc.id, true);
@@ -4686,6 +4709,7 @@ function renderDashboardGlobal() {
       cantHoy: ventasSucHoy.length,
       totalMes: ventasSucMes.reduce((s, v) => s + v.total, 0),
       stockBajoSuc,
+      inv: valorInventario(suc.id),
     };
   });
 
@@ -4697,11 +4721,41 @@ function renderDashboardGlobal() {
         <div class="kpi"><div class="kpi-label">Ventas del mes (todas)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(totalMes)}</div></div>
         <div class="kpi"><div class="kpi-label">Sucursales activas</div><div class="kpi-value">${DB.sucursales.length}</div></div>
         <div class="kpi"><div class="kpi-label">Stock bajo (todas)</div><div class="kpi-value" style="color:var(--red);">${stockBajoTotal}</div><div class="kpi-sub">productos con menos de 10</div></div>
+        <div class="kpi"><div class="kpi-label">Valor del inventario (todas)</div><div class="kpi-value" style="color:var(--navy-light);">${formatoMoneda(invGlobal.costo)}</div><div class="kpi-sub">a costo · a precio de venta: ${formatoMoneda(invGlobal.venta)}</div></div>
+      </div>
+
+      <div class="viz-grid">
+        <div class="card viz-card">
+          <h3 class="viz-titulo">📦 Dónde está tu inventario</h3>
+          <p class="viz-sub">Parte del valor del inventario (a costo) que tiene cada sucursal.</p>
+          ${vizDona(gInvDona, { aria: 'Valor del inventario por sucursal', centroSub: 'a costo' })}
+        </div>
+        <div class="card viz-card">
+          <h3 class="viz-titulo">💰 Valor del inventario por sucursal</h3>
+          <p class="viz-sub"><b>A costo</b>: lo que te costó el producto que tienes. <b>A precio de venta</b>: lo que sacarías vendiéndolo todo a precio de menudeo.</p>
+          <div class="table-wrap"><table class="dtable" style="font-size:12.5px;">
+            <thead><tr><th>Sucursal</th><th>A costo</th><th>A precio de venta</th><th>Ganancia posible</th></tr></thead>
+            <tbody>
+              ${invPorSuc.map((x) => `<tr>
+                <td style="font-weight:700;color:var(--navy);">${escapeHtml(x.suc.nombre)}</td>
+                <td style="font-weight:700;">${formatoMoneda(x.costo)}</td>
+                <td>${formatoMoneda(x.venta)}</td>
+                <td style="color:var(--emerald-dark);">${formatoMoneda(x.ganancia)}</td>
+              </tr>`).join('') || `<tr><td colspan="4" class="empty-row">No hay sucursales registradas.</td></tr>`}
+              <tr style="border-top:2px solid var(--navy);">
+                <td style="font-weight:800;color:var(--navy);">Total</td>
+                <td style="font-weight:800;">${formatoMoneda(invGlobal.costo)}</td>
+                <td style="font-weight:800;">${formatoMoneda(invGlobal.venta)}</td>
+                <td style="font-weight:800;color:var(--emerald-dark);">${formatoMoneda(invGlobal.ganancia)}</td>
+              </tr>
+            </tbody>
+          </table></div>
+        </div>
       </div>
 
       <p class="field-label" style="margin-bottom:10px;">Sucursales</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:28px;">
-        ${porSucursal.map(({ suc, totalHoy, cantHoy, totalMes, stockBajoSuc }) => `
+        ${porSucursal.map(({ suc, totalHoy, cantHoy, totalMes, stockBajoSuc, inv }) => `
           <div class="card" style="padding:18px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
               <h3 style="margin:0;">${escapeHtml(suc.nombre)}</h3>
@@ -4712,6 +4766,8 @@ function renderDashboardGlobal() {
               ${miniStat('Tickets hoy', String(cantHoy), 'navy')}
               ${miniStat('Ventas del mes', formatoMoneda(totalMes), 'navy')}
               ${miniStat('Stock bajo', String(stockBajoSuc), stockBajoSuc > 0 ? 'red' : 'emerald')}
+              ${miniStat('Inventario (a costo)', formatoMoneda(inv.costo), 'navy')}
+              ${miniStat('Inventario (a venta)', formatoMoneda(inv.venta), 'navy')}
             </div>
             <button class="btn btn-primary" style="width:100%;" data-action="entrarSucursal" data-id="${suc.id}">Entrar a ${escapeHtml(suc.nombre)} →</button>
           </div>
